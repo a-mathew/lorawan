@@ -9,19 +9,21 @@
 #ifndef LORAWAN_MAC_HELPER_H
 #define LORAWAN_MAC_HELPER_H
 
+#include "ns3/class-a-end-device-lorawan-mac.h"
+#include "ns3/class-c-end-device-lorawan-mac.h"
+#include "ns3/gateway-lorawan-mac.h"
 #include "ns3/lora-channel.h"
 #include "ns3/lora-device-address-generator.h"
+#include "ns3/lora-phy.h"
+#include "ns3/lorawan-mac.h"
+#include "ns3/net-device.h"
 #include "ns3/node-container.h"
-#include "ns3/object-factory.h"
+#include "ns3/random-variable-stream.h"
 
 namespace ns3
 {
 namespace lorawan
 {
-
-class ClassAEndDeviceLorawanMac;
-class GatewayLorawanMac;
-class LorawanMac;
 
 /**
  * @ingroup lorawan
@@ -38,7 +40,8 @@ class LorawanMacHelper
     enum DeviceType
     {
         GW,
-        ED_A
+        ED_A,
+        ED_C
     };
 
     /**
@@ -186,6 +189,13 @@ class LorawanMacHelper
     /**
      * Perform region-specific configurations for the 868 MHz EU band.
      *
+     * @param edMac Pointer to the Class C device MAC layer to configure.
+     */
+    void ConfigureForEuRegion(Ptr<ClassCEndDeviceLorawanMac> edMac) const;
+
+    /**
+     * Perform region-specific configurations for the 868 MHz EU band.
+     *
      * @param gwMac Pointer to the gateway MAC layer to configure.
      */
     void ConfigureForEuRegion(Ptr<GatewayLorawanMac> gwMac) const;
@@ -204,6 +214,13 @@ class LorawanMacHelper
      * @param edMac Pointer to the device MAC layer to configure.
      */
     void ConfigureForSingleChannelRegion(Ptr<ClassAEndDeviceLorawanMac> edMac) const;
+
+    /**
+     * Perform region-specific configurations for the SINGLECHANNEL band.
+     *
+     * @param edMac Pointer to the Class C device MAC layer to configure.
+     */
+    void ConfigureForSingleChannelRegion(Ptr<ClassCEndDeviceLorawanMac> edMac) const;
 
     /**
      * Perform region-specific configurations for the SINGLECHANNEL band.
@@ -230,6 +247,13 @@ class LorawanMacHelper
     /**
      * Perform region-specific configurations for the ALOHA band.
      *
+     * @param edMac Pointer to the Class C device MAC layer to configure.
+     */
+    void ConfigureForAlohaRegion(Ptr<ClassCEndDeviceLorawanMac> edMac) const;
+
+    /**
+     * Perform region-specific configurations for the ALOHA band.
+     *
      * @param gwMac Pointer to the gateway MAC layer to configure.
      */
     void ConfigureForAlohaRegion(Ptr<GatewayLorawanMac> gwMac) const;
@@ -249,6 +273,6 @@ class LorawanMacHelper
 };
 
 } // namespace lorawan
-} // namespace ns3
 
+} // namespace ns3
 #endif /* LORA_PHY_HELPER_H */

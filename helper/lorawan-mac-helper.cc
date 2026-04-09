@@ -8,11 +8,13 @@
 
 #include "lorawan-mac-helper.h"
 
-#include "ns3/class-a-end-device-lorawan-mac.h"
+#include "ns3/class-c-end-device-lorawan-mac.h"
 #include "ns3/end-device-lora-phy.h"
 #include "ns3/gateway-lora-phy.h"
-#include "ns3/gateway-lorawan-mac.h"
+#include "ns3/log.h"
 #include "ns3/lora-net-device.h"
+#include "ns3/random-variable-stream.h"
+#include "ns3/simulator.h"
 
 namespace ns3
 {
@@ -44,6 +46,9 @@ LorawanMacHelper::SetDeviceType(enum DeviceType dt)
     case ED_A:
         m_mac.SetTypeId("ns3::ClassAEndDeviceLorawanMac");
         break;
+    case ED_C:
+        m_mac.SetTypeId("ns3::ClassCEndDeviceLorawanMac");
+        break;
     }
     m_deviceType = dt;
 }
@@ -69,9 +74,9 @@ LorawanMacHelper::Install(Ptr<Node> node, Ptr<NetDevice> device) const
     mac->SetDevice(device);
 
     // If we are operating on an end device, add an address to it
-    if (m_deviceType == ED_A && m_addrGen)
+    if ((m_deviceType == ED_A || m_deviceType == ED_C) && m_addrGen)
     {
-        DynamicCast<ClassAEndDeviceLorawanMac>(mac)->SetDeviceAddress(m_addrGen->NextAddress());
+        DynamicCast<EndDeviceLorawanMac>(mac)->SetDeviceAddress(m_addrGen->NextAddress());
     }
 
     // Add a basic list of channels based on the region where the device is
@@ -98,6 +103,34 @@ LorawanMacHelper::Install(Ptr<Node> node, Ptr<NetDevice> device) const
             break;
         }
         }
+    }
+    else if (m_deviceType == ED_C)
+    {
+        Ptr<ClassCEndDeviceLorawanMac> edMac = DynamicCast<ClassCEndDeviceLorawanMac>(mac);
+        switch (m_region)
+        {
+        case LorawanMacHelper::EU: {
+            ConfigureForEuRegion(edMac);
+            break;
+        }
+        case LorawanMacHelper::SingleChannel: {
+            ConfigureForSingleChannelRegion(edMac);
+            break;
+        }
+        case LorawanMacHelper::ALOHA: {
+            ConfigureForAlohaRegion(edMac);
+            break;
+        }
+        default: {
+            NS_LOG_ERROR("This region isn't supported yet!");
+            break;
+        }
+        }
+
+        // Class C: Open the continuous RX2 window at simulation start
+        Simulator::Schedule(Seconds(0),
+                            &ClassCEndDeviceLorawanMac::OpenContinuousReceiveWindow,
+                            edMac);
     }
     else
     {
@@ -459,8 +492,8 @@ LorawanMacHelper::SetSpreadingFactorsUp(NodeContainer endDevices,
         Ptr<NetDevice> netDevice = object->GetDevice(0);
         Ptr<LoraNetDevice> loraNetDevice = DynamicCast<LoraNetDevice>(netDevice);
         NS_ASSERT(loraNetDevice);
-        Ptr<ClassAEndDeviceLorawanMac> mac =
-            DynamicCast<ClassAEndDeviceLorawanMac>(loraNetDevice->GetMac());
+        Ptr<EndDeviceLorawanMac> mac =
+            DynamicCast<EndDeviceLorawanMac>(loraNetDevice->GetMac());
         NS_ASSERT(mac);
 
         // Try computing the distance from each gateway and find the best one
@@ -617,8 +650,8 @@ LorawanMacHelper::SetSpreadingFactorsGivenDistribution(NodeContainer endDevices,
         Ptr<NetDevice> netDevice = object->GetDevice(0);
         Ptr<LoraNetDevice> loraNetDevice = DynamicCast<LoraNetDevice>(netDevice);
         NS_ASSERT(loraNetDevice);
-        Ptr<ClassAEndDeviceLorawanMac> mac =
-            DynamicCast<ClassAEndDeviceLorawanMac>(loraNetDevice->GetMac());
+        Ptr<EndDeviceLorawanMac> mac =
+            DynamicCast<EndDeviceLorawanMac>(loraNetDevice->GetMac());
         NS_ASSERT(mac);
 
         double prob = uniformRV->GetValue(0, 1);
@@ -660,6 +693,85 @@ LorawanMacHelper::SetSpreadingFactorsGivenDistribution(NodeContainer endDevices,
     return sfQuantity;
 
 } //  end function
+
+/////////////////////////////////////////////////////
+// Class C End Device region configuration methods //
+/////////////////////////////////////////////////////
+
+void
+LorawanMacHelper::ConfigureForEuRegion(Ptr<ClassCEndDeviceLorawanMac> edMac) const
+{
+    NS_LOG_FUNCTION_NOARGS();
+
+    ApplyCommonEuConfigurations(edMac);
+
+    edMac->SetTxDbmForTxPower(std::vector<double>{14, 12, 10, 8, 6, 4, 2, 0});
+
+    LorawanMac::ReplyDataRateMatrix matrix = {{{{0, 0, 0, 0, 0, 0}},
+                                               {{1, 0, 0, 0, 0, 0}},
+                                               {{2, 1, 0, 0, 0, 0}},
+                                               {{3, 2, 1, 0, 0, 0}},
+                                               {{4, 3, 2, 1, 0, 0}},
+                                               {{5, 4, 3, 2, 1, 0}},
+                                               {{6, 5, 4, 3, 2, 1}},
+                                               {{7, 6, 5, 4, 3, 2}}}};
+    edMac->SetReplyDataRateMatrix(matrix);
+
+    edMac->SetNPreambleSymbols(8);
+
+    edMac->SetSecondReceiveWindowDataRate(0);
+    edMac->SetSecondReceiveWindowFrequency(869525000);
+}
+
+void
+LorawanMacHelper::ConfigureForSingleChannelRegion(Ptr<ClassCEndDeviceLorawanMac> edMac) const
+{
+    NS_LOG_FUNCTION_NOARGS();
+
+    ApplyCommonSingleChannelConfigurations(edMac);
+
+    edMac->SetTxDbmForTxPower(std::vector<double>{14, 12, 10, 8, 6, 4, 2, 0});
+
+    LorawanMac::ReplyDataRateMatrix matrix = {{{{0, 0, 0, 0, 0, 0}},
+                                               {{1, 0, 0, 0, 0, 0}},
+                                               {{2, 1, 0, 0, 0, 0}},
+                                               {{3, 2, 1, 0, 0, 0}},
+                                               {{4, 3, 2, 1, 0, 0}},
+                                               {{5, 4, 3, 2, 1, 0}},
+                                               {{6, 5, 4, 3, 2, 1}},
+                                               {{7, 6, 5, 4, 3, 2}}}};
+    edMac->SetReplyDataRateMatrix(matrix);
+
+    edMac->SetNPreambleSymbols(8);
+
+    edMac->SetSecondReceiveWindowDataRate(0);
+    edMac->SetSecondReceiveWindowFrequency(869525000);
+}
+
+void
+LorawanMacHelper::ConfigureForAlohaRegion(Ptr<ClassCEndDeviceLorawanMac> edMac) const
+{
+    NS_LOG_FUNCTION_NOARGS();
+
+    ApplyCommonAlohaConfigurations(edMac);
+
+    edMac->SetTxDbmForTxPower(std::vector<double>{14, 12, 10, 8, 6, 4, 2, 0});
+
+    LorawanMac::ReplyDataRateMatrix matrix = {{{{0, 0, 0, 0, 0, 0}},
+                                               {{1, 0, 0, 0, 0, 0}},
+                                               {{2, 1, 0, 0, 0, 0}},
+                                               {{3, 2, 1, 0, 0, 0}},
+                                               {{4, 3, 2, 1, 0, 0}},
+                                               {{5, 4, 3, 2, 1, 0}},
+                                               {{6, 5, 4, 3, 2, 1}},
+                                               {{7, 6, 5, 4, 3, 2}}}};
+    edMac->SetReplyDataRateMatrix(matrix);
+
+    edMac->SetNPreambleSymbols(8);
+
+    edMac->SetSecondReceiveWindowDataRate(0);
+    edMac->SetSecondReceiveWindowFrequency(869525000);
+}
 
 } // namespace lorawan
 } // namespace ns3

@@ -5,13 +5,27 @@
  *
  * Authors: Davide Magrin <magrinda@dei.unipd.it>
  *          Martina Capuzzo <capuzzom@dei.unipd.it>
+ *
+ * Modified: Added Application Server interface (uplink forwarding,
+ *           downlink enqueueing) for Class C support.
  */
 
 #ifndef NETWORK_SERVER_H
 #define NETWORK_SERVER_H
 
+#include "class-a-end-device-lorawan-mac.h"
+#include "gateway-status.h"
+#include "lora-device-address.h"
+#include "network-controller.h"
+#include "network-scheduler.h"
+#include "network-status.h"
+
 #include "ns3/application.h"
+#include "ns3/log.h"
+#include "ns3/net-device.h"
 #include "ns3/node-container.h"
+#include "ns3/object.h"
+#include "ns3/packet.h"
 #include "ns3/point-to-point-net-device.h"
 
 namespace ns3
@@ -19,10 +33,16 @@ namespace ns3
 namespace lorawan
 {
 
-class NetworkScheduler;
-class NetworkController;
-class NetworkControllerComponent;
-class NetworkStatus;
+/**
+ * @ingroup lorawan
+ *
+ * Callback signature for forwarding uplink application payloads to an
+ * Application Server.
+ *
+ * @param address  The LoRa device address of the sender.
+ * @param payload  The application-layer payload (MAC headers stripped).
+ */
+typedef Callback<void, LoraDeviceAddress, Ptr<Packet>> UplinkForwardCallback;
 
 /**
  * @ingroup lorawan
@@ -112,15 +132,39 @@ class NetworkServer : public Application
      */
     Ptr<NetworkStatus> GetNetworkStatus();
 
+    // ---- Application Server Interface ----
+
+    /**
+     * Set the callback used to forward uplink application payloads to the
+     * Application Server.
+     *
+     * @param cb The callback to invoke on every uplink with payload.
+     */
+    void SetUplinkForwardCallback(UplinkForwardCallback cb);
+
+    /**
+     * Enqueue a downlink application payload for an end device.
+     *
+     * The NetworkServer wraps the payload in proper LoRaWAN headers,
+     * tags with RX2 parameters, selects the best gateway, and transmits.
+     * For Class C devices the RX2 window is always open.
+     *
+     * @param deviceAddress The target end device address.
+     * @param payload       The raw application payload to deliver.
+     */
+    void EnqueueDownlink(LoraDeviceAddress deviceAddress, Ptr<Packet> payload);
+
   protected:
     Ptr<NetworkStatus> m_status;         //!< Ptr to the NetworkStatus object.
     Ptr<NetworkController> m_controller; //!< Ptr to the NetworkController object.
     Ptr<NetworkScheduler> m_scheduler;   //!< Ptr to the NetworkScheduler object.
 
     TracedCallback<Ptr<const Packet>> m_receivedPacket; //!< The `ReceivedPacket` trace source.
+
+    UplinkForwardCallback m_uplinkForwardCb; //!< Callback to Application Server.
 };
 
 } // namespace lorawan
-} // namespace ns3
 
+} // namespace ns3
 #endif /* NETWORK_SERVER_H */

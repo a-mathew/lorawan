@@ -9,6 +9,7 @@ set(source_files
     model/gateway-lorawan-mac.cc
     model/end-device-lorawan-mac.cc
     model/class-a-end-device-lorawan-mac.cc
+    model/class-c-end-device-lorawan-mac.cc
     model/gateway-lora-phy.cc
     model/end-device-lora-phy.cc
     model/simple-end-device-lora-phy.cc
@@ -37,6 +38,7 @@ set(source_files
     model/lora-utils.cc
     model/adr-component.cc
     model/hex-grid-position-allocator.cc
+    model/lora-application-server.cc
     helper/lora-radio-energy-model-helper.cc
     helper/lora-helper.cc
     helper/lora-phy-helper.cc
@@ -45,6 +47,7 @@ set(source_files
     helper/one-shot-sender-helper.cc
     helper/forwarder-helper.cc
     helper/network-server-helper.cc
+    helper/lora-application-server-helper.cc
     helper/lora-packet-tracker.cc
 )
 
@@ -59,6 +62,7 @@ set(header_files
     model/gateway-lorawan-mac.h
     model/end-device-lorawan-mac.h
     model/class-a-end-device-lorawan-mac.h
+    model/class-c-end-device-lorawan-mac.h
     model/gateway-lora-phy.h
     model/end-device-lora-phy.h
     model/simple-end-device-lora-phy.h
@@ -87,6 +91,7 @@ set(header_files
     model/lora-utils.h
     model/adr-component.h
     model/hex-grid-position-allocator.h
+    model/lora-application-server.h
     helper/lora-radio-energy-model-helper.h
     helper/lora-helper.h
     helper/lora-phy-helper.h
@@ -95,21 +100,25 @@ set(header_files
     helper/one-shot-sender-helper.h
     helper/forwarder-helper.h
     helper/network-server-helper.h
+    helper/lora-application-server-helper.h
     helper/lora-packet-tracker.h
+    test/utilities.h
 )
 
 build_lib(
-  LIBNAME lorawan
-  SOURCE_FILES ${source_files}
-  HEADER_FILES ${header_files}
-  LIBRARIES_TO_LINK
-    ${libenergy}
-    ${libpoint-to-point}
-    ${libbuildings}
-  TEST_SOURCES
-    test/utilities.cc
-    test/lorawan-test-suite.cc
-    test/network-status-test-suite.cc
-    test/network-scheduler-test-suite.cc
-    test/network-server-test-suite.cc
+    LIBNAME lorawan
+    SOURCE_FILES ${source_files}
+    HEADER_FILES ${header_files}
+    LIBRARIES_TO_LINK
+        ${libenergy}
+        ${libpoint-to-point}
+        ${libbuildings}
+        ${libcsma}
+        ${libinternet}
+    TEST_SOURCES
+        test/utilities.cc
+        test/lorawan-test-suite.cc
+        test/network-status-test-suite.cc
+        test/network-scheduler-test-suite.cc
+        test/network-server-test-suite.cc
 )

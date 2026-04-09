@@ -5,17 +5,25 @@
  *
  * Authors: Davide Magrin <magrinda@dei.unipd.it>
  *          Martina Capuzzo <capuzzom@dei.unipd.it>
+ *
+ * Modified: Added Application Server interface (uplink forwarding,
+ *           downlink enqueueing) for Class C support.
  */
 
 #include "network-server.h"
 
 #include "class-a-end-device-lorawan-mac.h"
-#include "gateway-lorawan-mac.h"
-#include "lora-net-device.h"
-#include "network-controller-components.h"
-#include "network-controller.h"
-#include "network-scheduler.h"
+#include "lora-device-address.h"
+#include "lora-frame-header.h"
+#include "lora-tag.h"
+#include "lorawan-mac-header.h"
+#include "mac-command.h"
 #include "network-status.h"
+
+#include "ns3/net-device.h"
+#include "ns3/node-container.h"
+#include "ns3/packet.h"
+#include "ns3/point-to-point-net-device.h"
 
 namespace ns3
 {
@@ -159,6 +167,29 @@ NetworkServer::Receive(Ptr<NetDevice> device,
     // Inform the controller of the newly arrived packet
     m_controller->OnNewPacket(packet);
 
+    // ---- Forward application payload to Application Server ----
+    if (!m_uplinkForwardCb.IsNull())
+    {
+        // Strip headers to extract the application payload
+        Ptr<Packet> payloadCopy = packet->Copy();
+        LorawanMacHeader macHdr;
+        payloadCopy->RemoveHeader(macHdr);
+        LoraFrameHeader frameHdr;
+        frameHdr.SetAsUplink();
+        payloadCopy->RemoveHeader(frameHdr);
+
+        LoraDeviceAddress deviceAddr = frameHdr.GetAddress();
+
+        // Forward only if there is application payload
+        if (payloadCopy->GetSize() > 0)
+        {
+            NS_LOG_INFO("Forwarding " << payloadCopy->GetSize()
+                                       << " bytes uplink payload from device "
+                                       << deviceAddr << " to Application Server");
+            m_uplinkForwardCb(deviceAddr, payloadCopy);
+        }
+    }
+
     return true;
 }
 
@@ -174,6 +205,63 @@ Ptr<NetworkStatus>
 NetworkServer::GetNetworkStatus()
 {
     return m_status;
+}
+
+// ---- Application Server Interface ----
+
+void
+NetworkServer::SetUplinkForwardCallback(UplinkForwardCallback cb)
+{
+    NS_LOG_FUNCTION(this);
+    m_uplinkForwardCb = cb;
+}
+
+void
+NetworkServer::EnqueueDownlink(LoraDeviceAddress deviceAddress, Ptr<Packet> payload)
+{
+    NS_LOG_FUNCTION(this << deviceAddress << payload->GetSize());
+
+    // Look up the end device
+    Ptr<EndDeviceStatus> edStatus = m_status->GetEndDeviceStatus(deviceAddress);
+    if (!edStatus)
+    {
+        NS_LOG_ERROR("EnqueueDownlink: unknown device " << deviceAddress);
+        return;
+    }
+
+    // Find the best gateway for this device (use window 2 = RX2 for Class C)
+    Address gwAddress = m_status->GetBestGatewayForDevice(deviceAddress, 2);
+    if (gwAddress == Address())
+    {
+        NS_LOG_WARN("EnqueueDownlink: no gateway available for device " << deviceAddress);
+        return;
+    }
+
+    // Build LoRaWAN downlink frame: MacHeader + FrameHeader + Payload
+    Ptr<Packet> pkt = payload->Copy();
+
+    LoraFrameHeader frameHdr;
+    frameHdr.SetAsDownlink();
+    frameHdr.SetAddress(deviceAddress);
+    frameHdr.SetAck(false);
+    pkt->AddHeader(frameHdr);
+
+    LorawanMacHeader macHdr;
+    macHdr.SetMType(LorawanMacHeader::UNCONFIRMED_DATA_DOWN);
+    pkt->AddHeader(macHdr);
+
+    // Tag with RX2 parameters (same pattern as NetworkStatus::GetReplyForDevice)
+    LoraTag tag;
+    tag.SetDataRate(edStatus->GetMac()->GetSecondReceiveWindowDataRate());
+    tag.SetFrequency(edStatus->GetSecondReceiveWindowFrequency());
+    pkt->AddPacketTag(tag);
+
+    NS_LOG_INFO("EnqueueDownlink: sending " << payload->GetSize()
+                << " bytes to device " << deviceAddress
+                << " via gateway " << gwAddress);
+
+    // Send through the selected gateway
+    m_status->SendThroughGateway(pkt, gwAddress);
 }
 
 } // namespace lorawan

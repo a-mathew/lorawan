@@ -11,9 +11,11 @@
 
 #include "end-device-lorawan-mac.h"
 
-#include "lora-phy.h"
+#include "class-a-end-device-lorawan-mac.h"
+#include "end-device-lora-phy.h"
 
 #include "ns3/energy-source-container.h"
+#include "ns3/log.h"
 #include "ns3/simulator.h"
 
 #include <bitset>
@@ -96,7 +98,7 @@ EndDeviceLorawanMac::EndDeviceLorawanMac()
     : m_nbTrans(1),
       m_dataRate(0),
       m_txPowerDbm(14),
-      m_codingRate(CodingRate::CR_4_5),
+      m_codingRate(1),
       // LoraWAN default
       m_headerDisabled(false),
       // LoraWAN default
@@ -123,6 +125,8 @@ EndDeviceLorawanMac::EndDeviceLorawanMac()
     // Void the transmission event
     m_nextTx = EventId();
     m_nextTx.Cancel();
+    m_nextRetx = EventId();
+    m_nextRetx.Cancel();
 
     // Initialize structure for retransmission parameters
     m_retxParams = EndDeviceLorawanMac::LoraRetxParameters();
@@ -218,9 +222,23 @@ void
 EndDeviceLorawanMac::PostponeTransmission(Time netxTxDelay, Ptr<Packet> packet)
 {
     NS_LOG_FUNCTION(this);
-    // Delete previously scheduled transmissions if any.
-    Simulator::Cancel(m_nextTx);
-    m_nextTx = Simulator::Schedule(netxTxDelay, &EndDeviceLorawanMac::DoSend, this, packet);
+    /*
+     * Keep postponed transmissions in FIFO order.
+     *
+     * Previously, each postponed packet canceled the already scheduled event.
+     * With fragmentation, multiple fragments may be postponed while Class A
+     * windows are open; canceling the older event drops fragments and breaks
+     * reassembly.
+     */
+    if (m_nextRetx.IsPending())
+    {
+        m_postponedTxQueue.push_back(packet);
+        NS_LOG_WARN("Postponed TX already pending; queueing packet (queue="
+                    << m_postponedTxQueue.size() << ")");
+        return;
+    }
+
+    m_nextRetx = Simulator::Schedule(netxTxDelay, &EndDeviceLorawanMac::DoSend, this, packet);
     NS_LOG_WARN("Attempting to send, but the aggregate duty cycle won't allow it. Scheduling a tx "
                 "at a delay "
                 << netxTxDelay.As(Time::S) << ".");
@@ -267,6 +285,17 @@ EndDeviceLorawanMac::DoSend(Ptr<Packet> packet)
         // Bump-up frame counters
         m_currentFCnt++;
         m_adrAckCnt++;
+    }
+
+    /*
+     * Drain postponed packet queue one-by-one.
+     * We re-enter Send() so normal duty-cycle/window checks still apply.
+     */
+    if (!m_postponedTxQueue.empty())
+    {
+        Ptr<Packet> nextPacket = m_postponedTxQueue.front();
+        m_postponedTxQueue.pop_front();
+        Simulator::ScheduleNow(&EndDeviceLorawanMac::Send, this, nextPacket);
     }
 }
 

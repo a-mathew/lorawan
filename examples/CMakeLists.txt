@@ -7,8 +7,9 @@ set(base_examples
     aloha-throughput
     parallel-reception-example
     frame-counter-update
+    class-c-example
+    class-c-realistic-channel-example
 )
-
 foreach(
   example
   ${base_examples}
