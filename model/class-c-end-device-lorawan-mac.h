@@ -78,9 +78,18 @@ class ClassCEndDeviceLorawanMac : public ClassAEndDeviceLorawanMac
     void OnRxParamSetupReq(uint8_t rx1DrOffset, uint8_t rx2DataRate, double frequencyHz) override;
 
   private:
+    /**
+     * Send an uplink acknowledging a received confirmed downlink, unless a
+     * regular uplink already carried the ACK bit in the meantime
+     * (LoRaWAN 1.0.4 Section 15: the ACK uplink must be sent no later than
+     * CLASS_C_RESP_TIMEOUT after the confirmed downlink).
+     */
+    void SendAckUplink();
+
     bool m_continuousRxOpen;       //!< Whether RXC is currently open
     bool m_downlinkReceivedInRx;   //!< DL received in RX1 → skip RX2
     uint32_t m_firstReceiveWindowFrequencyHz; //!< Last uplink frequency used to restore RX1 tuning
+    EventId m_scheduledAckUplink;  //!< Scheduled ACK uplink for a confirmed downlink
 
 }; /* ClassCEndDeviceLorawanMac */
 } /* namespace lorawan */

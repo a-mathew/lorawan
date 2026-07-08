@@ -70,6 +70,7 @@ uint32_t g_nsSentDownlink = 0;
 // AS trace counters
 uint32_t g_asReceivedUplink = 0;
 uint32_t g_asSentDownlink = 0;
+bool g_confirmedDownlinks = false;
 
 // ED-side reception counters (per node id)
 std::map<uint32_t, uint32_t> g_edRxCount;
@@ -222,7 +223,7 @@ class EchoHandler : public Object
                     << " to " << addr
                     << " (" << payload->GetSize() << "B)"
                     << " t=" << Simulator::Now().As(Time::S));
-        m_as->SendDownlink(addr, payload);
+        m_as->SendDownlink(addr, payload, g_confirmedDownlinks);
     }
 
     Ptr<LoraApplicationServer> m_as;
@@ -297,6 +298,9 @@ main(int argc, char* argv[])
     cmd.AddValue("nDevices", "Number of Class C end devices", nDevices);
     cmd.AddValue("simulationTime", "Simulation time [s]", simulationTimeSeconds);
     cmd.AddValue("payloadSize", "Uplink payload size [bytes]", payloadSize);
+    cmd.AddValue("confirmed",
+                 "Send echo downlinks as CONFIRMED_DATA_DOWN",
+                 g_confirmedDownlinks);
     cmd.Parse(argc, argv);
 
     // ---- Logging ----

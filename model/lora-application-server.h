@@ -26,8 +26,11 @@
 
 #include "ns3/application.h"
 #include "ns3/callback.h"
+#include "ns3/header.h"
+#include "ns3/ipv4-address.h"
 #include "ns3/packet.h"
 #include "ns3/ptr.h"
+#include "ns3/socket.h"
 #include "ns3/traced-callback.h"
 
 #include <map>
@@ -40,6 +43,35 @@ namespace lorawan
 {
 
 class NetworkServer; // Forward declaration
+
+/**
+ * @ingroup lorawan
+ *
+ * Header prepended to payloads exchanged between the NetworkServer and the
+ * LoraApplicationServer over the UDP/IP transport. Carries the LoRa device
+ * address the payload belongs to and a flags field (bit 0: the downlink is
+ * to be sent as CONFIRMED_DATA_DOWN).
+ */
+class AsTransportHeader : public Header
+{
+  public:
+    static TypeId GetTypeId();
+    TypeId GetInstanceTypeId() const override;
+
+    uint32_t GetSerializedSize() const override;
+    void Serialize(Buffer::Iterator start) const override;
+    uint32_t Deserialize(Buffer::Iterator start) override;
+    void Print(std::ostream& os) const override;
+
+    void SetDeviceAddress(uint32_t address);
+    uint32_t GetDeviceAddress() const;
+    void SetConfirmed(bool confirmed);
+    bool IsConfirmed() const;
+
+  private:
+    uint32_t m_deviceAddress = 0; //!< LoRa device address of the payload.
+    uint8_t m_flags = 0;          //!< Bit 0: confirmed downlink requested.
+};
 
 /**
  * @ingroup lorawan
@@ -78,6 +110,19 @@ class LoraApplicationServer : public Application
     void SetNetworkServer(Ptr<NetworkServer> ns);
 
     /**
+     * Use a UDP/IP transport towards the Network Server instead of the
+     * direct callback: uplinks are received as datagrams on uplinkPort and
+     * downlink requests are sent to nsAddress:downlinkPort. The datagrams
+     * actually traverse the link between the two nodes (e.g. the CSMA LAN
+     * set up by LoraApplicationServerHelper).
+     *
+     * @param nsAddress    IPv4 address of the Network Server.
+     * @param uplinkPort   UDP port this server listens on for uplinks.
+     * @param downlinkPort UDP port the Network Server listens on.
+     */
+    void SetIpTransport(Ipv4Address nsAddress, uint16_t uplinkPort, uint16_t downlinkPort);
+
+    /**
      * Register an application handler for uplink payloads.
      * All registered handlers are called for every uplink (broadcast).
      * Handlers filter by device address internally if needed.
@@ -96,8 +141,14 @@ class LoraApplicationServer : public Application
     /**
      * Send a downlink payload to an end device.
      * Called by application handlers. Forwards to NS for transmission.
+     *
+     * @param deviceAddress The target end device address.
+     * @param payload       The application payload to deliver.
+     * @param confirmed     Whether to request a CONFIRMED_DATA_DOWN.
      */
-    void SendDownlink(LoraDeviceAddress deviceAddress, Ptr<Packet> payload);
+    void SendDownlink(LoraDeviceAddress deviceAddress,
+                      Ptr<Packet> payload,
+                      bool confirmed = false);
 
     Ptr<NetworkServer> GetNetworkServer() const;
 
@@ -106,7 +157,21 @@ class LoraApplicationServer : public Application
     void StopApplication() override;
 
   private:
+    /**
+     * Receive an uplink datagram from the Network Server (UDP transport).
+     *
+     * @param socket The socket the datagram arrived on.
+     */
+    void HandleNsDatagram(Ptr<Socket> socket);
+
     Ptr<NetworkServer> m_networkServer;
+
+    bool m_useIpTransport = false; //!< Whether the NS link uses UDP/IP.
+    Ipv4Address m_nsAddress;       //!< Network Server IPv4 address.
+    uint16_t m_uplinkPort = 0;     //!< Local port receiving uplink datagrams.
+    uint16_t m_downlinkPort = 0;   //!< NS port for downlink datagrams.
+    Ptr<Socket> m_uplinkSocket;    //!< Socket receiving NS -> AS uplinks.
+    Ptr<Socket> m_downlinkSocket;  //!< Socket for AS -> NS downlinks.
 
     /// Registered handlers: (name, callback)
     std::vector<std::pair<std::string, AppUplinkHandler>> m_handlers;

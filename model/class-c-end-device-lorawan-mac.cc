@@ -192,6 +192,24 @@ ClassCEndDeviceLorawanMac::Receive(Ptr<const Packet> packet)
             packet->PeekPacketTag(tag);
             m_lastRxSnr = tag.GetReceivePower() + 174 - 10 * log10(125000) - 6;
 
+            // A confirmed downlink must be acknowledged with an uplink no
+            // later than CLASS_C_RESP_TIMEOUT (LoRaWAN 1.0.4 Section 15).
+            // Set the ACK flag for the next uplink and schedule one in case
+            // no regular uplink is due.
+            if (mHdr.GetMType() == LorawanMacHeader::CONFIRMED_DATA_DOWN)
+            {
+                NS_LOG_INFO("Received a confirmed downlink; scheduling acknowledgement.");
+                m_ackDownlinkPending = true;
+                if (!m_scheduledAckUplink.IsPending())
+                {
+                    Time ackDelay = Seconds(m_uniformRV->GetValue(1, 3));
+                    m_scheduledAckUplink =
+                        Simulator::Schedule(ackDelay,
+                                            &ClassCEndDeviceLorawanMac::SendAckUplink,
+                                            this);
+                }
+            }
+
             // Parse the MAC commands
             ParseCommands(fHdr);
 
@@ -636,6 +654,21 @@ bool
 ClassCEndDeviceLorawanMac::IsContinuousReceiveWindowOpen() const
 {
     return m_continuousRxOpen;
+}
+
+void
+ClassCEndDeviceLorawanMac::SendAckUplink()
+{
+    NS_LOG_FUNCTION(this);
+
+    if (!m_ackDownlinkPending)
+    {
+        // A regular uplink already carried the acknowledgement
+        return;
+    }
+
+    NS_LOG_INFO("Sending an empty uplink to acknowledge a confirmed downlink.");
+    Send(Create<Packet>());
 }
 
 /////////////////////////

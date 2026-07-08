@@ -21,12 +21,17 @@
 #include "network-status.h"
 
 #include "ns3/application.h"
+#include "ns3/event-id.h"
+#include "ns3/ipv4-address.h"
 #include "ns3/log.h"
 #include "ns3/net-device.h"
 #include "ns3/node-container.h"
 #include "ns3/object.h"
 #include "ns3/packet.h"
 #include "ns3/point-to-point-net-device.h"
+#include "ns3/socket.h"
+
+#include <map>
 
 namespace ns3
 {
@@ -149,10 +154,43 @@ class NetworkServer : public Application
      * tags with RX2 parameters, selects the best gateway, and transmits.
      * For Class C devices the RX2 window is always open.
      *
+     * Confirmed downlinks follow LoRaWAN 1.0.4 Section 15: at most one
+     * confirmed downlink is outstanding per device, and a new one is not
+     * transmitted until the previous one was acknowledged or
+     * CLASS_C_RESP_TIMEOUT expired.
+     *
      * @param deviceAddress The target end device address.
      * @param payload       The raw application payload to deliver.
+     * @param confirmed     Whether to send as CONFIRMED_DATA_DOWN.
      */
-    void EnqueueDownlink(LoraDeviceAddress deviceAddress, Ptr<Packet> payload);
+    void EnqueueDownlink(LoraDeviceAddress deviceAddress,
+                         Ptr<Packet> payload,
+                         bool confirmed = false);
+
+    /**
+     * Notify the server that an RX2 parameter change (RXParamSetupReq) is in
+     * flight for the given device. Per LoRaWAN 1.0.4 Section 5.4, no Class C
+     * downlink is transmitted to that device until an uplink carrying
+     * RXParamSetupAns is received, since the device may still be listening on
+     * the old RXC parameters.
+     *
+     * @param deviceAddress The device whose RX2 parameters are changing.
+     */
+    void NotifyRx2ParamChangePending(LoraDeviceAddress deviceAddress);
+
+    /**
+     * Use a UDP/IP transport towards the Application Server instead of the
+     * direct callback. Uplink payloads are sent as datagrams to
+     * asAddress:uplinkPort, and a socket is opened on downlinkPort to receive
+     * downlink requests from the Application Server.
+     *
+     * @param asAddress    IPv4 address of the Application Server.
+     * @param uplinkPort   UDP port the Application Server listens on.
+     * @param downlinkPort UDP port this server listens on for downlinks.
+     */
+    void ConnectToApplicationServer(Ipv4Address asAddress,
+                                    uint16_t uplinkPort,
+                                    uint16_t downlinkPort);
 
   protected:
     /**
@@ -160,16 +198,37 @@ class NetworkServer : public Application
      *
      * Defers transmission while the device is inside its Class A
      * receive-window region (RX1/RX2 preempt an RXC demodulation,
-     * LoRaWAN 1.0.4 Section 15) and retries when no gateway is currently
-     * able to transmit (busy or duty-cycle limited).
+     * LoRaWAN 1.0.4 Section 15), while a Class A reply is pending for the
+     * device, while an RX2 parameter change awaits its RXParamSetupAns,
+     * or while a previous confirmed downlink is still unacknowledged.
+     * Retries when no gateway is currently able to transmit (busy or
+     * duty-cycle limited).
      *
      * @param deviceAddress The target end device address.
      * @param payload       The raw application payload to deliver.
-     * @param retriesLeft   Remaining no-gateway retries before dropping.
+     * @param confirmed     Whether to send as CONFIRMED_DATA_DOWN.
+     * @param retriesLeft   Remaining deferral/retry budget before dropping.
      */
     void DoEnqueueDownlink(LoraDeviceAddress deviceAddress,
                            Ptr<Packet> payload,
+                           bool confirmed,
                            uint8_t retriesLeft);
+
+    /**
+     * Called when CLASS_C_RESP_TIMEOUT expires without an acknowledgement
+     * for an outstanding confirmed downlink; releases the per-device
+     * confirmed-downlink slot.
+     *
+     * @param deviceAddress The device whose confirmed downlink timed out.
+     */
+    void ConfirmedDownlinkTimeout(LoraDeviceAddress deviceAddress);
+
+    /**
+     * Receive a downlink-request datagram from the Application Server.
+     *
+     * @param socket The socket the datagram arrived on.
+     */
+    void HandleAsDatagram(Ptr<Socket> socket);
 
     Ptr<NetworkStatus> m_status;         //!< Ptr to the NetworkStatus object.
     Ptr<NetworkController> m_controller; //!< Ptr to the NetworkController object.
@@ -195,6 +254,21 @@ class NetworkServer : public Application
     /// Time of the last uplink received from each device, used to keep
     /// spontaneous Class C downlinks clear of the RX1/RX2 window region.
     std::map<LoraDeviceAddress, Time> m_lastUplinkTime;
+
+    /// Devices with an outstanding (unacknowledged) confirmed downlink and
+    /// the CLASS_C_RESP_TIMEOUT event that will release the slot.
+    std::map<LoraDeviceAddress, EventId> m_confirmedDlPending;
+
+    /// Devices with an RX2 parameter change awaiting RXParamSetupAns; Class C
+    /// downlinks to these devices are held back.
+    std::map<LoraDeviceAddress, bool> m_rx2ChangePending;
+
+    bool m_useIpTransport = false;   //!< Whether the AS link uses UDP/IP.
+    Ipv4Address m_asAddress;         //!< Application Server IPv4 address.
+    uint16_t m_asUplinkPort = 0;     //!< AS port for uplink datagrams.
+    uint16_t m_asDownlinkPort = 0;   //!< Local port for downlink datagrams.
+    Ptr<Socket> m_asUplinkSocket;    //!< Socket for NS -> AS uplinks.
+    Ptr<Socket> m_asDownlinkSocket;  //!< Socket receiving AS -> NS downlinks.
 };
 
 } // namespace lorawan

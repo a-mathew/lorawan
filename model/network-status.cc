@@ -10,7 +10,11 @@
 #include "network-status.h"
 
 #include "class-a-end-device-lorawan-mac.h"
+#include "gateway-lorawan-mac.h"
+#include "lora-phy.h"
 #include "lora-tag.h"
+
+#include "ns3/simulator.h"
 
 namespace ns3
 {
@@ -153,7 +157,52 @@ NetworkStatus::SendThroughGateway(Ptr<Packet> packet, Address gwAddress)
 {
     NS_LOG_FUNCTION(packet << gwAddress);
 
-    m_gatewayStatuses.find(gwAddress)->second->GetNetDevice()->Send(packet, gwAddress, 0x0800);
+    auto it = m_gatewayStatuses.find(gwAddress);
+    if (it == m_gatewayStatuses.end() || !packet)
+    {
+        NS_LOG_WARN("SendThroughGateway: invalid gateway or packet");
+        return;
+    }
+
+    Ptr<GatewayStatus> gwStatus = it->second;
+
+    /*
+     * Reserve the gateway for one packet airtime before handing the frame to
+     * the gateway net-device. Without this booking, two downlinks emitted in
+     * near-zero time both pass the availability checks and the second one is
+     * silently lost to MAC/PHY contention.
+     */
+    Ptr<GatewayLorawanMac> gwMac = gwStatus->GetGatewayMac();
+    if (gwMac)
+    {
+        LoraTag tag;
+        if (packet->PeekPacketTag(tag))
+        {
+            const uint8_t dr = tag.GetDataRate();
+            const uint8_t sf = gwMac->GetSfFromDataRate(dr);
+            const double bw = gwMac->GetBandwidthFromDataRate(dr);
+            if (sf > 0 && bw > 0)
+            {
+                LoraTxParameters params;
+                params.sf = sf;
+                params.headerDisabled = false;
+                params.codingRate = CodingRate::CR_4_5;
+                params.bandwidthHz = bw;
+                params.nPreamble = 8;
+                params.crcEnabled = true;
+                params.lowDataRateOptimizationEnabled =
+                    LoraPhy::GetTSym(params) > MilliSeconds(16);
+                Time duration = LoraPhy::GetOnAirTime(packet, params);
+                if (duration.IsStrictlyPositive())
+                {
+                    gwStatus->SetNextTransmissionTime(Simulator::Now() + duration +
+                                                      MilliSeconds(1));
+                }
+            }
+        }
+    }
+
+    gwStatus->GetNetDevice()->Send(packet, gwAddress, 0x0800);
 }
 
 Ptr<Packet>

@@ -14,6 +14,7 @@
 
 #include "class-a-end-device-lorawan-mac.h"
 #include "gateway-lorawan-mac.h"
+#include "lora-application-server.h"
 #include "lora-device-address.h"
 #include "lora-frame-header.h"
 #include "lora-net-device.h"
@@ -25,11 +26,13 @@
 #include "network-scheduler.h"
 #include "network-status.h"
 
+#include "ns3/inet-socket-address.h"
 #include "ns3/net-device.h"
 #include "ns3/node-container.h"
 #include "ns3/packet.h"
 #include "ns3/point-to-point-net-device.h"
 #include "ns3/simulator.h"
+#include "ns3/udp-socket-factory.h"
 
 namespace ns3
 {
@@ -49,6 +52,13 @@ constexpr uint32_t DOWNLINK_RETRY_DELAY_MS = 2000;
 /// RX1/RX2 preempt an in-progress RXC demodulation (LoRaWAN 1.0.4 §15), so a
 /// downlink overlapping this region would be aborted by the device.
 constexpr double CLASS_A_QUIET_PERIOD_S = 2.5;
+/// Time the server waits for the acknowledgement of a confirmed Class C
+/// downlink before releasing the per-device slot (LoRaWAN 1.0.4 §15,
+/// CLASS_C_RESP_TIMEOUT default).
+constexpr double CLASS_C_RESP_TIMEOUT_S = 8.0;
+/// Recheck period for downlinks held back by protocol state (pending
+/// RXParamSetupAns or an outstanding confirmed downlink).
+constexpr uint32_t DOWNLINK_HOLD_RECHECK_MS = 2000;
 } // namespace
 
 NS_LOG_COMPONENT_DEFINE("NetworkServer");
@@ -98,6 +108,22 @@ void
 NetworkServer::StartApplication()
 {
     NS_LOG_FUNCTION_NOARGS();
+
+    if (m_useIpTransport)
+    {
+        // Socket towards the Application Server for uplink datagrams
+        m_asUplinkSocket = Socket::CreateSocket(GetNode(), UdpSocketFactory::GetTypeId());
+        m_asUplinkSocket->Connect(InetSocketAddress(m_asAddress, m_asUplinkPort));
+
+        // Socket receiving downlink requests from the Application Server
+        m_asDownlinkSocket = Socket::CreateSocket(GetNode(), UdpSocketFactory::GetTypeId());
+        m_asDownlinkSocket->Bind(InetSocketAddress(Ipv4Address::GetAny(), m_asDownlinkPort));
+        m_asDownlinkSocket->SetRecvCallback(MakeCallback(&NetworkServer::HandleAsDatagram, this));
+
+        NS_LOG_INFO("NetworkServer AS transport: uplinks to "
+                    << m_asAddress << ":" << m_asUplinkPort << ", listening for downlinks on port "
+                    << m_asDownlinkPort);
+    }
 }
 
 void
@@ -198,8 +224,7 @@ NetworkServer::Receive(Ptr<NetDevice> device,
     // Inform the controller of the newly arrived packet
     m_controller->OnNewPacket(packet);
 
-    // ---- Forward application payload to Application Server ----
-    if (!m_uplinkForwardCb.IsNull())
+    // ---- Application Server interface: bookkeeping and uplink forwarding ----
     {
         // Strip headers to extract the application payload
         Ptr<Packet> payloadCopy = packet->Copy();
@@ -215,8 +240,38 @@ NetworkServer::Receive(Ptr<NetDevice> device,
         // downlinks must stay clear of its RX1/RX2 window region.
         m_lastUplinkTime[deviceAddr] = Simulator::Now();
 
-        // Forward only if there is application payload
-        if (payloadCopy->GetSize() > 0)
+        // An uplink carrying the ACK bit releases the per-device
+        // confirmed-downlink slot.
+        if (frameHdr.GetAck())
+        {
+            auto pending = m_confirmedDlPending.find(deviceAddr);
+            if (pending != m_confirmedDlPending.end())
+            {
+                NS_LOG_INFO("Confirmed downlink to " << deviceAddr << " acknowledged.");
+                Simulator::Cancel(pending->second);
+                m_confirmedDlPending.erase(pending);
+            }
+        }
+
+        // An RXParamSetupAns lifts the hold on Class C downlinks that was
+        // set when the RX2 parameter change was issued.
+        if (m_rx2ChangePending.count(deviceAddr) > 0)
+        {
+            for (const auto& command : frameHdr.GetCommands())
+            {
+                if (command->GetCommandType() == RX_PARAM_SETUP_ANS)
+                {
+                    NS_LOG_INFO("RXParamSetupAns received from "
+                                << deviceAddr << "; Class C downlinks resumed.");
+                    m_rx2ChangePending.erase(deviceAddr);
+                    break;
+                }
+            }
+        }
+
+        // Forward only if an AS is connected and there is application payload
+        bool haveAsLink = m_useIpTransport || !m_uplinkForwardCb.IsNull();
+        if (haveAsLink && payloadCopy->GetSize() > 0)
         {
             // Deduplicate: with N gateways in range the same uplink arrives N
             // times (and confirmed-uplink retransmissions repeat the FCnt);
@@ -235,7 +290,18 @@ NetworkServer::Receive(Ptr<NetDevice> device,
                                           << " bytes uplink payload from device " << deviceAddr
                                           << " to Application Server");
                 m_forwardedToAS(payloadCopy);
-                m_uplinkForwardCb(deviceAddr, payloadCopy);
+                if (m_useIpTransport && m_asUplinkSocket)
+                {
+                    Ptr<Packet> datagram = payloadCopy->Copy();
+                    AsTransportHeader header;
+                    header.SetDeviceAddress(deviceAddr.Get());
+                    datagram->AddHeader(header);
+                    m_asUplinkSocket->Send(datagram);
+                }
+                else
+                {
+                    m_uplinkForwardCb(deviceAddr, payloadCopy);
+                }
             }
         }
     }
@@ -267,25 +333,109 @@ NetworkServer::SetUplinkForwardCallback(UplinkForwardCallback cb)
 }
 
 void
-NetworkServer::EnqueueDownlink(LoraDeviceAddress deviceAddress, Ptr<Packet> payload)
+NetworkServer::EnqueueDownlink(LoraDeviceAddress deviceAddress, Ptr<Packet> payload, bool confirmed)
 {
-    NS_LOG_FUNCTION(this << deviceAddress << payload->GetSize());
+    NS_LOG_FUNCTION(this << deviceAddress << payload->GetSize() << confirmed);
 
-    DoEnqueueDownlink(deviceAddress, payload, MAX_DOWNLINK_RETRIES);
+    DoEnqueueDownlink(deviceAddress, payload, confirmed, MAX_DOWNLINK_RETRIES);
+}
+
+void
+NetworkServer::NotifyRx2ParamChangePending(LoraDeviceAddress deviceAddress)
+{
+    NS_LOG_FUNCTION(this << deviceAddress);
+    m_rx2ChangePending[deviceAddress] = true;
+}
+
+void
+NetworkServer::ConnectToApplicationServer(Ipv4Address asAddress,
+                                          uint16_t uplinkPort,
+                                          uint16_t downlinkPort)
+{
+    NS_LOG_FUNCTION(this << asAddress << uplinkPort << downlinkPort);
+    m_asAddress = asAddress;
+    m_asUplinkPort = uplinkPort;
+    m_asDownlinkPort = downlinkPort;
+    m_useIpTransport = true;
+}
+
+void
+NetworkServer::ConfirmedDownlinkTimeout(LoraDeviceAddress deviceAddress)
+{
+    NS_LOG_FUNCTION(this << deviceAddress);
+    NS_LOG_WARN("No acknowledgement for confirmed downlink to "
+                << deviceAddress << " within CLASS_C_RESP_TIMEOUT; releasing slot.");
+    m_confirmedDlPending.erase(deviceAddress);
+}
+
+void
+NetworkServer::HandleAsDatagram(Ptr<Socket> socket)
+{
+    NS_LOG_FUNCTION(this << socket);
+
+    Ptr<Packet> datagram;
+    while ((datagram = socket->Recv()))
+    {
+        if (datagram->GetSize() < AsTransportHeader().GetSerializedSize())
+        {
+            NS_LOG_WARN("Ignoring undersized datagram from the Application Server.");
+            continue;
+        }
+        AsTransportHeader header;
+        datagram->RemoveHeader(header);
+        EnqueueDownlink(LoraDeviceAddress(header.GetDeviceAddress()),
+                        datagram,
+                        header.IsConfirmed());
+    }
 }
 
 void
 NetworkServer::DoEnqueueDownlink(LoraDeviceAddress deviceAddress,
                                  Ptr<Packet> payload,
+                                 bool confirmed,
                                  uint8_t retriesLeft)
 {
-    NS_LOG_FUNCTION(this << deviceAddress << payload->GetSize() << unsigned(retriesLeft));
+    NS_LOG_FUNCTION(this << deviceAddress << payload->GetSize() << confirmed
+                         << unsigned(retriesLeft));
 
     // Look up the end device
     Ptr<EndDeviceStatus> edStatus = m_status->GetEndDeviceStatus(deviceAddress);
     if (!edStatus)
     {
         NS_LOG_ERROR("EnqueueDownlink: unknown device " << deviceAddress);
+        return;
+    }
+
+    // Hold downlinks while an RX2 parameter change awaits RXParamSetupAns:
+    // the device may still be listening on the old RXC parameters
+    // (LoRaWAN 1.0.4 Section 5.4).
+    if (m_rx2ChangePending.count(deviceAddress) > 0)
+    {
+        NS_LOG_WARN("EnqueueDownlink: RX2 parameter change pending for "
+                    << deviceAddress << "; holding downlink.");
+        Simulator::Schedule(MilliSeconds(DOWNLINK_HOLD_RECHECK_MS),
+                            &NetworkServer::DoEnqueueDownlink,
+                            this,
+                            deviceAddress,
+                            payload,
+                            confirmed,
+                            retriesLeft);
+        return;
+    }
+
+    // At most one confirmed downlink outstanding per device
+    // (LoRaWAN 1.0.4 Section 15).
+    if (confirmed && m_confirmedDlPending.count(deviceAddress) > 0)
+    {
+        NS_LOG_INFO("EnqueueDownlink: confirmed downlink already outstanding for "
+                    << deviceAddress << "; holding next one.");
+        Simulator::Schedule(MilliSeconds(DOWNLINK_HOLD_RECHECK_MS),
+                            &NetworkServer::DoEnqueueDownlink,
+                            this,
+                            deviceAddress,
+                            payload,
+                            confirmed,
+                            retriesLeft);
         return;
     }
 
@@ -307,9 +457,26 @@ NetworkServer::DoEnqueueDownlink(LoraDeviceAddress deviceAddress,
                                 this,
                                 deviceAddress,
                                 payload,
+                                confirmed,
                                 retriesLeft);
             return;
         }
+    }
+
+    // Coordinate with the Class A scheduler: if a reply is about to be sent
+    // in this device's RX1/RX2 windows, let it go first.
+    if (m_status->NeedsReply(deviceAddress) || edStatus->HasReceiveWindowOpportunityScheduled())
+    {
+        NS_LOG_INFO("EnqueueDownlink: Class A reply pending for "
+                    << deviceAddress << "; deferring spontaneous downlink.");
+        Simulator::Schedule(MilliSeconds(DOWNLINK_HOLD_RECHECK_MS),
+                            &NetworkServer::DoEnqueueDownlink,
+                            this,
+                            deviceAddress,
+                            payload,
+                            confirmed,
+                            retriesLeft);
+        return;
     }
 
     // Find the best gateway for this device (use window 2 = RX2 for Class C)
@@ -326,6 +493,7 @@ NetworkServer::DoEnqueueDownlink(LoraDeviceAddress deviceAddress,
                                 this,
                                 deviceAddress,
                                 payload,
+                                confirmed,
                                 static_cast<uint8_t>(retriesLeft - 1));
         }
         else
@@ -350,7 +518,8 @@ NetworkServer::DoEnqueueDownlink(LoraDeviceAddress deviceAddress,
     pkt->AddHeader(frameHdr);
 
     LorawanMacHeader macHdr;
-    macHdr.SetMType(LorawanMacHeader::UNCONFIRMED_DATA_DOWN);
+    macHdr.SetMType(confirmed ? LorawanMacHeader::CONFIRMED_DATA_DOWN
+                              : LorawanMacHeader::UNCONFIRMED_DATA_DOWN);
     pkt->AddHeader(macHdr);
 
     // Tag with RX2 parameters (same pattern as NetworkStatus::GetReplyForDevice).
@@ -366,6 +535,17 @@ NetworkServer::DoEnqueueDownlink(LoraDeviceAddress deviceAddress,
     NS_LOG_INFO("EnqueueDownlink: sending " << payload->GetSize()
                 << " bytes to device " << deviceAddress
                 << " via gateway " << gwAddress);
+
+    // A confirmed downlink occupies the per-device slot until the device
+    // acknowledges it or CLASS_C_RESP_TIMEOUT expires.
+    if (confirmed)
+    {
+        m_confirmedDlPending[deviceAddress] =
+            Simulator::Schedule(Seconds(CLASS_C_RESP_TIMEOUT_S),
+                                &NetworkServer::ConfirmedDownlinkTimeout,
+                                this,
+                                deviceAddress);
+    }
 
     // Send through the selected gateway
     m_sentDownlink(pkt);

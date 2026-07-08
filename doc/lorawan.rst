@@ -374,9 +374,17 @@ Downlinks received in the RXC window that carry MAC commands are silently
 discarded, as required by the 1.0.4 specification. Class C devices are
 instantiated by setting the device type ``LorawanMacHelper::ED_C`` in
 ``LorawanMacHelper``. On the server side, ``NetworkServer::EnqueueDownlink``
-allows an application (see ``LoraApplicationServer``) to push an unconfirmed
-downlink to a Class C device at any time, without waiting for an uplink;
-see ``examples/class-c-example.cc`` and
+allows an application (see ``LoraApplicationServer``) to push a downlink to
+a Class C device at any time, without waiting for an uplink. Downlinks may
+be sent confirmed: the device then acknowledges with an uplink within
+CLASS_C_RESP_TIMEOUT, and the server keeps at most one confirmed downlink
+outstanding per device. The server also defers spontaneous downlinks around
+the device's Class A receive windows, coordinates with scheduled
+network-server replies, and can hold downlinks while an RX2 parameter
+change awaits its RXParamSetupAns. When the Application Server is set up
+through ``LoraApplicationServerHelper``, NS-AS traffic is carried as UDP
+datagrams over the CSMA/IP link between the two nodes. See
+``examples/class-c-example.cc`` and
 ``examples/app-server-verify-example.cc``.
 
 Regional parameters

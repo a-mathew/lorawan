@@ -388,6 +388,13 @@ class EndDeviceLorawanMac : public LorawanMac
     struct LoraRetxParameters m_retxParams;
 
     /**
+     * Whether the next uplink must carry the ACK bit, acknowledging a
+     * confirmed downlink. Cleared when the ACK is placed in an uplink
+     * frame header.
+     */
+    bool m_ackDownlinkPending = false;
+
+    /**
      * An uniform random variable, used to randomly pick from the channel list.
      */
     Ptr<UniformRandomVariable> m_uniformRV;

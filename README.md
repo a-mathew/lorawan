@@ -48,8 +48,8 @@ Key behaviors:
 
 ### Application server and downlink enqueueing
 
-The `NetworkServer` now exposes an Application Server interface for pushing
-downlinks to end devices:
+The `NetworkServer` exposes an Application Server interface for pushing
+downlinks to end devices at any time (the defining Class C capability):
 
 ```cpp
 // Forward uplink payloads to your application logic
@@ -57,10 +57,25 @@ nsApp->SetUplinkForwardCallback(MakeCallback(&MyApp::OnUplink, myApp));
 
 // Enqueue a downlink for a Class C device (sent via RX2/RXC)
 nsApp->EnqueueDownlink(deviceAddress, payload);
+
+// Enqueue a confirmed downlink; the device acknowledges it with an uplink
+// within CLASS_C_RESP_TIMEOUT, and at most one confirmed downlink is
+// outstanding per device (LoRaWAN 1.0.4 Section 15)
+nsApp->EnqueueDownlink(deviceAddress, payload, true);
 ```
 
-A standalone `LoraApplicationServer` application is also provided for
-scenarios where the AS runs on a separate node.
+`EnqueueDownlink` schedules transmissions around the device's Class A
+receive windows (which preempt RXC), coordinates with pending network-server
+replies, retries when the gateway is busy or duty-cycle limited, and holds
+downlinks back while an RX2 parameter change awaits its `RXParamSetupAns`
+(use `NotifyRx2ParamChangePending()` when issuing the change).
+
+A standalone `LoraApplicationServer` application is provided for scenarios
+where the AS runs on a separate node. When installed through
+`LoraApplicationServerHelper`, the NS and AS exchange uplink payloads and
+downlink requests as UDP datagrams over the CSMA/IP link between the two
+nodes, so the NS-AS traffic is part of the simulated network and visible in
+pcap traces.
 
 ### Realistic channel example
 

@@ -115,17 +115,23 @@ LoraApplicationServerHelper::Install(Ptr<Node> asNode, Ptr<Node> nsNode)
     Ptr<LoraApplicationServer> appServer = CreateObject<LoraApplicationServer>();
     asNode->AddApplication(appServer);
 
-    // ---- 5. Connect AS to Network Server via callback ----
-    // In reality this would be gRPC/MQTT over the IP link above.
-    // We model the API as a direct C++ callback — the CSMA+IP link
-    // provides the correct topology and could carry actual packets
-    // in a future extension.
+    // ---- 5. Connect AS to Network Server over UDP/IP ----
+    // Uplink payloads and downlink requests are carried as UDP datagrams
+    // over the CSMA link created above, so the NS-AS traffic actually
+    // traverses the modeled network (visible in pcap traces).
     if (m_networkServer)
     {
-        appServer->SetNetworkServer(m_networkServer);
-        NS_LOG_INFO("AS connected to NetworkServer via callback "
-                     "(models gRPC/MQTT over " << interfaces.GetAddress(0)
-                     << " <-> " << interfaces.GetAddress(1) << ")");
+        const uint16_t uplinkPort = 8700;   // AS listens for uplinks
+        const uint16_t downlinkPort = 8701; // NS listens for downlinks
+
+        m_networkServer->ConnectToApplicationServer(interfaces.GetAddress(1),
+                                                    uplinkPort,
+                                                    downlinkPort);
+        appServer->SetIpTransport(interfaces.GetAddress(0), uplinkPort, downlinkPort);
+
+        NS_LOG_INFO("AS connected to NetworkServer over UDP/IP: uplinks to "
+                    << interfaces.GetAddress(1) << ":" << uplinkPort << ", downlinks to "
+                    << interfaces.GetAddress(0) << ":" << downlinkPort);
     }
     else
     {

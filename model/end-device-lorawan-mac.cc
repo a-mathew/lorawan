@@ -487,6 +487,13 @@ EndDeviceLorawanMac::ApplyNecessaryOptions(LoraFrameHeader& frameHeader)
     frameHeader.SetAdr(m_adr);
     frameHeader.SetAdrAckReq(m_adrAckReq);
 
+    // Acknowledge a received confirmed downlink
+    if (m_ackDownlinkPending)
+    {
+        frameHeader.SetAck(true);
+        m_ackDownlinkPending = false;
+    }
+
     // FPending does not exist in uplink messages
     frameHeader.SetFCnt(m_currentFCnt);
 
