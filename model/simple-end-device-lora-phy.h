@@ -50,6 +50,14 @@ class SimpleEndDeviceLoraPhy : public EndDeviceLoraPhy
               uint32_t frequencyHz,
               double txPowerDbm) override;
 
+    /**
+     * Switch to STANDBY, also forgetting any reception in progress so that
+     * its EndReceive event is recognized as aborted.
+     */
+    void SwitchToStandby() override;
+
+    bool IsReceivingPacket() const override;
+
   private:
     /**
      * The interference event of the reception this PHY is currently locked

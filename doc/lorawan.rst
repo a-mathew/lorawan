@@ -371,7 +371,10 @@ transmitting and not inside an RX1/RX2 window, following Section 15 of the
 LoRaWAN L2 1.0.4 specification: RXC is opened between the end of an uplink and
 RX1, between RX1 and RX2, and permanently after RX2 until the next uplink.
 Downlinks received in the RXC window that carry MAC commands are silently
-discarded, as required by the 1.0.4 specification. Class C devices are
+discarded, as required by the 1.0.4 specification. While listening (in RXC
+and in the RX1/RX2 windows) the Class C PHY stays in the RX state, so
+``LoraRadioEnergyModel`` accounts RX current for the entire listening time,
+which is the dominant energy cost of a Class C device. Class C devices are
 instantiated by setting the device type ``LorawanMacHelper::ED_C`` in
 ``LorawanMacHelper``. On the server side, ``NetworkServer::EnqueueDownlink``
 allows an application (see ``LoraApplicationServer``) to push a downlink to

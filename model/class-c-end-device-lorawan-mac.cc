@@ -73,6 +73,16 @@ ClassCEndDeviceLorawanMac::SendToPhy(Ptr<Packet> packetToSend)
     // LoRaWAN 1.0.4 Section 15: Close RXC before transmitting
     CloseContinuousReceiveWindow();
 
+    // The radio may still be listening in RX (e.g. inside an RX1/RX2
+    // window); it must be in STANDBY before switching to TX
+    {
+        Ptr<EndDeviceLoraPhy> phy = DynamicCast<EndDeviceLoraPhy>(m_phy);
+        if (phy->GetState() == EndDeviceLoraPhy::State::RX)
+        {
+            phy->SwitchToStandby();
+        }
+    }
+
     // Reset the per-TX-cycle flag
     m_downlinkReceivedInRx = false;
 
@@ -392,8 +402,9 @@ ClassCEndDeviceLorawanMac::OpenFirstReceiveWindow()
         &ClassCEndDeviceLorawanMac::CloseFirstReceiveWindow,
         this);
 
-    // Switch PHY to STANDBY (PHY auto-transitions to RX when it detects a preamble)
-    phy->SwitchToStandby();
+    // A Class C device listens in RX (drawing RX current) during its
+    // Class A windows too
+    phy->SwitchToRx();
 
     NS_LOG_INFO("Class C: RX1 window opened on "
                 << m_firstReceiveWindowFrequencyHz << " Hz, DR"
@@ -413,9 +424,15 @@ ClassCEndDeviceLorawanMac::CloseFirstReceiveWindow()
     case EndDeviceLoraPhy::State::SLEEP:
         break;
     case EndDeviceLoraPhy::State::RX:
-        // PHY is receiving: let it finish, Receive() will handle the result
-        NS_LOG_DEBUG("PHY is receiving in RX1: Receive will handle the result.");
-        return;
+        if (phy->IsReceivingPacket())
+        {
+            // PHY is demodulating: let it finish, Receive() handles the result
+            NS_LOG_DEBUG("PHY is receiving in RX1: Receive will handle the result.");
+            return;
+        }
+        // Nothing was detected during RX1: leave the listening state
+        phy->SwitchToStandby();
+        break;
     case EndDeviceLoraPhy::State::STANDBY:
         break;
     }
@@ -455,9 +472,9 @@ ClassCEndDeviceLorawanMac::OpenSecondReceiveWindow()
 
     Ptr<EndDeviceLoraPhy> phy = DynamicCast<EndDeviceLoraPhy>(m_phy);
 
-    if (phy->GetState() == EndDeviceLoraPhy::State::RX)
+    if (phy->IsReceivingPacket())
     {
-        NS_LOG_INFO("Won't open RX2 since we are in RX mode.");
+        NS_LOG_INFO("Won't open RX2 since a reception is in progress.");
         return;
     }
 
@@ -480,8 +497,9 @@ ClassCEndDeviceLorawanMac::OpenSecondReceiveWindow()
         &ClassCEndDeviceLorawanMac::CloseSecondReceiveWindow,
         this);
 
-    // Switch PHY to STANDBY (PHY auto-transitions to RX when it detects a preamble)
-    phy->SwitchToStandby();
+    // A Class C device listens in RX (drawing RX current) during its
+    // Class A windows too
+    phy->SwitchToRx();
 
     NS_LOG_INFO("Class C: RX2 window opened.");
 }
@@ -499,9 +517,15 @@ ClassCEndDeviceLorawanMac::CloseSecondReceiveWindow()
     case EndDeviceLoraPhy::State::SLEEP:
         break;
     case EndDeviceLoraPhy::State::RX:
-        // PHY is receiving: let it finish
-        NS_LOG_DEBUG("PHY is receiving in RX2: Receive will handle the result.");
-        return;
+        if (phy->IsReceivingPacket())
+        {
+            // PHY is demodulating: let it finish
+            NS_LOG_DEBUG("PHY is receiving in RX2: Receive will handle the result.");
+            return;
+        }
+        // Nothing was detected during RX2: leave the listening state
+        phy->SwitchToStandby();
+        break;
     case EndDeviceLoraPhy::State::STANDBY:
         // Nothing was detected in RX2
         break;
@@ -559,10 +583,11 @@ ClassCEndDeviceLorawanMac::OpenContinuousReceiveWindow()
         return;
     }
 
-    // Don't open if already receiving in RX1/RX2 (let it finish)
-    if (phy->GetState() == EndDeviceLoraPhy::State::RX)
+    // Don't open if a packet is being demodulated (let it finish; the
+    // receive path reopens RXC afterwards)
+    if (phy->IsReceivingPacket())
     {
-        NS_LOG_INFO("Won't open RXC since we are already in RX mode.");
+        NS_LOG_INFO("Won't open RXC since a reception is in progress.");
         return;
     }
 
@@ -579,8 +604,9 @@ ClassCEndDeviceLorawanMac::OpenContinuousReceiveWindow()
     phy->SetFrequency(m_secondReceiveWindowFrequencyHz);
     phy->SetSpreadingFactor(GetSfFromDataRate(m_secondReceiveWindowDataRate));
 
-    // Switch PHY to STANDBY — PHY will auto-transition to RX when it detects a preamble.
-    phy->SwitchToStandby();
+    // Class C continuous listening: the receiver is actually on the whole
+    // time, drawing RX current — it does not idle in standby.
+    phy->SwitchToRx();
 
     m_continuousRxOpen = true;
 
@@ -605,7 +631,10 @@ ClassCEndDeviceLorawanMac::CloseContinuousReceiveWindow()
     // the demodulation should be terminated."
     if (phy->GetState() == EndDeviceLoraPhy::State::RX)
     {
-        NS_LOG_INFO("Terminating RXC demodulation: Class A window takes priority.");
+        if (phy->IsReceivingPacket())
+        {
+            NS_LOG_INFO("Terminating RXC demodulation: Class A window takes priority.");
+        }
         phy->SwitchToStandby();
     }
 

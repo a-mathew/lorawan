@@ -194,12 +194,29 @@ class EndDeviceLoraPhy : public LoraPhy
     /**
      * Switch to the STANDBY state.
      */
-    void SwitchToStandby();
+    virtual void SwitchToStandby();
 
     /**
      * Switch to the SLEEP state.
      */
     void SwitchToSleep();
+
+    /**
+     * Switch to the RX state.
+     *
+     * Public so that a Class C MAC can keep the radio in RX for continuous
+     * listening (the receiver of a Class C device is on whenever it is not
+     * transmitting, and consumes RX current the whole time).
+     */
+    void SwitchToRx();
+
+    /**
+     * Whether the PHY is currently locked on an incoming packet
+     * (demodulating), as opposed to merely listening in the RX state.
+     *
+     * @return True if a packet reception is in progress.
+     */
+    virtual bool IsReceivingPacket() const;
 
     /**
      * Add the input listener to the list of objects to be notified of PHY-level
@@ -226,11 +243,6 @@ class EndDeviceLoraPhy : public LoraPhy
      * @param packet A pointer to the Packet transmitted.
      */
     void TxFinished(Ptr<const Packet> packet) override;
-
-    /**
-     * Switch to the RX state.
-     */
-    void SwitchToRx();
 
     /**
      * Switch to the TX state.

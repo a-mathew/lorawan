@@ -143,6 +143,12 @@ EndDeviceLoraPhy::SwitchToRx()
     }
 }
 
+bool
+EndDeviceLoraPhy::IsReceivingPacket() const
+{
+    return m_state == State::RX;
+}
+
 void
 EndDeviceLoraPhy::SwitchToTx(double txPowerDbm)
 {

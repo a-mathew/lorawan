@@ -41,6 +41,10 @@ Per the spec, the timing within a single uplink cycle looks like this:
 
 Key behaviors:
 - RXC uses the same frequency and data rate as RX2 (default EU868: 869.525 MHz, DR0/SF12).
+- While listening (RXC and the RX1/RX2 windows), the PHY is in the RX state,
+  so `LoraRadioEnergyModel` charges RX current (default 11.2 mA) for the whole
+  listening time — the defining energy cost of Class C. Standby current is
+  only drawn during brief turnaround moments.
 - If a downlink is being demodulated on RXC when RX1 or RX2 needs to open, the RXC
   demodulation is terminated and the Class A window takes priority.
 - If a valid downlink is received in RX1, RX2 is skipped and RXC reopens immediately.

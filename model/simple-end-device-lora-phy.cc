@@ -125,13 +125,16 @@ SimpleEndDeviceLoraPhy::StartReceive(Ptr<Packet> packet,
         NS_LOG_INFO("Dropping packet because device is in TX state");
         break;
     }
-    case State::RX: {
-        NS_LOG_INFO("Dropping packet because device is already in RX state");
-        break;
-    }
-    // If we are in STANDBY mode, we can potentially lock on the currently
-    // incoming transmission
+    // If we are in STANDBY, or listening in RX without a locked packet
+    // (Class C continuous reception), we can potentially lock on the
+    // currently incoming transmission
+    case State::RX:
     case State::STANDBY: {
+        if (GetState() == State::RX && m_currentRxEvent)
+        {
+            NS_LOG_INFO("Dropping packet because device is already receiving a packet");
+            break;
+        }
         // There are a series of properties the packet needs to respect in order
         // for us to be able to lock on it:
         // - It's on frequency we are listening on
@@ -209,9 +212,12 @@ SimpleEndDeviceLoraPhy::StartReceive(Ptr<Packet> packet,
         ///////////////////////////////////
         if (canLockOnPacket)
         {
-            // Switch to RX state
+            // Switch to RX state (unless already listening in RX)
             // EndReceive will handle the switch back to STANDBY state
-            SwitchToRx();
+            if (GetState() == State::STANDBY)
+            {
+                SwitchToRx();
+            }
 
             // Remember which reception we are locked on, so that EndReceive
             // can detect receptions aborted by the MAC (Class C preemption)
@@ -250,9 +256,9 @@ SimpleEndDeviceLoraPhy::EndReceive(Ptr<Packet> packet, Ptr<LoraInterferenceHelpe
             m_interferedPacket(packet, 0);
         }
 
-        // Only inform the MAC when the radio is idle: if a newer reception is
-        // already in progress, this stale event must not disturb it.
-        if (GetState() != EndDeviceLoraPhy::State::RX && !m_rxFailedCallback.IsNull())
+        // Only inform the MAC when no newer reception is in progress: a
+        // stale event must not disturb an ongoing one.
+        if (!m_currentRxEvent && !m_rxFailedCallback.IsNull())
         {
             m_rxFailedCallback(packet);
         }
@@ -315,6 +321,21 @@ SimpleEndDeviceLoraPhy::EndReceive(Ptr<Packet> packet, Ptr<LoraInterferenceHelpe
             m_rxOkCallback(packet);
         }
     }
+}
+
+void
+SimpleEndDeviceLoraPhy::SwitchToStandby()
+{
+    // Forget any reception in progress: its pending EndReceive event will
+    // recognize the mismatch and treat the reception as aborted.
+    m_currentRxEvent = nullptr;
+    EndDeviceLoraPhy::SwitchToStandby();
+}
+
+bool
+SimpleEndDeviceLoraPhy::IsReceivingPacket() const
+{
+    return bool(m_currentRxEvent);
 }
 
 } // namespace lorawan
