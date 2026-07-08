@@ -240,17 +240,19 @@ NetworkServer::Receive(Ptr<NetDevice> device,
         // downlinks must stay clear of its RX1/RX2 window region.
         m_lastUplinkTime[deviceAddr] = Simulator::Now();
 
-        // An uplink carrying the ACK bit releases the per-device
-        // confirmed-downlink slot.
-        if (frameHdr.GetAck())
+        // Any uplink from the device releases the per-device
+        // confirmed-downlink slot (LoRaWAN 1.0.4 Section 15: the server
+        // waits "until the response timeout expires or an uplink is
+        // received").
+        auto pending = m_confirmedDlPending.find(deviceAddr);
+        if (pending != m_confirmedDlPending.end())
         {
-            auto pending = m_confirmedDlPending.find(deviceAddr);
-            if (pending != m_confirmedDlPending.end())
-            {
-                NS_LOG_INFO("Confirmed downlink to " << deviceAddr << " acknowledged.");
-                Simulator::Cancel(pending->second);
-                m_confirmedDlPending.erase(pending);
-            }
+            NS_LOG_INFO("Confirmed downlink to "
+                        << deviceAddr
+                        << (frameHdr.GetAck() ? " acknowledged."
+                                              : " released by an uplink without ACK."));
+            Simulator::Cancel(pending->second);
+            m_confirmedDlPending.erase(pending);
         }
 
         // An RXParamSetupAns lifts the hold on Class C downlinks that was
@@ -423,12 +425,14 @@ NetworkServer::DoEnqueueDownlink(LoraDeviceAddress deviceAddress,
         return;
     }
 
-    // At most one confirmed downlink outstanding per device
-    // (LoRaWAN 1.0.4 Section 15).
-    if (confirmed && m_confirmedDlPending.count(deviceAddress) > 0)
+    // A pending confirmed downlink blocks ALL further downlinks to the
+    // device (head-of-line, as production network servers do) until it is
+    // acknowledged or times out (LoRaWAN 1.0.4 Section 15 keeps at most one
+    // confirmed downlink outstanding per device).
+    if (m_confirmedDlPending.count(deviceAddress) > 0)
     {
-        NS_LOG_INFO("EnqueueDownlink: confirmed downlink already outstanding for "
-                    << deviceAddress << "; holding next one.");
+        NS_LOG_INFO("EnqueueDownlink: confirmed downlink outstanding for "
+                    << deviceAddress << "; holding this one.");
         Simulator::Schedule(MilliSeconds(DOWNLINK_HOLD_RECHECK_MS),
                             &NetworkServer::DoEnqueueDownlink,
                             this,

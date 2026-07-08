@@ -185,8 +185,14 @@ ClassCEndDeviceLorawanMac::Receive(Ptr<const Packet> packet)
             Simulator::Cancel(m_secondReceiveWindow);
             Simulator::Cancel(m_closeSecondWindow);
 
-            // Reset ADR backoff counter
-            m_adrAckCnt = 0;
+            // Reset the ADR backoff counter only for Class A (RX1/RX2)
+            // receptions: reference stacks do not reset it for downlinks
+            // received in RXC, so a device served exclusively through RXC
+            // still performs ADR backoff on its uplink path.
+            if (!m_continuousRxOpen)
+            {
+                m_adrAckCnt = 0;
+            }
 
             LoraTag tag;
             packet->PeekPacketTag(tag);
