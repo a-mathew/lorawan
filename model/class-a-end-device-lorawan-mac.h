@@ -153,7 +153,7 @@ class ClassAEndDeviceLorawanMac : public EndDeviceLorawanMac
 
     void OnRxParamSetupReq(uint8_t rx1DrOffset, uint8_t rx2DataRate, double frequencyHz) override;
 
-  private:
+  protected:
     Time m_receiveDelay1; //!< The interval between when a packet is done sending and when the first
                           //!< receive window is opened.
 

@@ -372,6 +372,13 @@ EndDeviceStatus::GetPowerGatewayMap()
     // Create a map of the gateways
     // Key: received power
     // Value: address of the corresponding gateway
+    if (m_receivedPacketList.empty())
+    {
+        NS_LOG_WARN("GetPowerGatewayMap called before any uplink was received: "
+                    "no gateway is known for this device yet.");
+        return std::map<double, Address>();
+    }
+
     ReceivedPacketInfo info = m_receivedPacketList.back().second;
     GatewayList gwList = info.gwList;
 

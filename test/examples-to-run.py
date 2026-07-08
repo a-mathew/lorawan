@@ -15,6 +15,9 @@ cpp_examples = [
     ("aloha-throughput", "True", "True"),
     ("parallel-reception-example", "True", "True"),
     ("frame-counter-update", "True", "True"),
+    ("class-c-example", "True", "True"),
+    ("class-c-realistic-channel-example", "True", "True"),
+    ("app-server-verify-example", "True", "True"),
 ]
 
 # A list of Python examples to run in order to ensure that they remain

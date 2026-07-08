@@ -73,11 +73,13 @@ The Network Server functions as a sink for data coming from all devices, and as
 a controller of the network that can leverage some MAC commands to change
 transmission settings in the End Devices.
 
-End Devices of the most basic type are defined as Class A devices, and are
-currently the only kind of device supported by this module. Class A devices
-perform transmission in a totally asynchronous way, and open two receive windows
-of fixed duration after each transmission to allow the Network Server to
-transmit acknowledgments or MAC commands.
+End Devices of the most basic type are defined as Class A devices. Class A
+devices perform transmission in a totally asynchronous way, and open two
+receive windows of fixed duration after each transmission to allow the Network
+Server to transmit acknowledgments or MAC commands. This module additionally
+supports Class C devices, which keep a continuous receive window open whenever
+they are not transmitting or receiving in a Class A window, enabling
+low-latency downlink communication.
 
 Another important characteristic of the standard is that it is defined to work
 on unlicensed bands in various regions, which usually subject transmitters to
@@ -103,7 +105,8 @@ To represent these two models, the module features two generic ``LoraPhy`` and
 model the peculiarities of the two wireless network devices: the End Device (ED)
 and the Gateway (GW). So, the PHY layers can be modeled by use of
 ``EndDeviceLoraPhy`` and ``GatewayLoraPhy`` classes, while objects of class
-``EndDeviceLorawanMac``, ``ClassAEndDeviceLorawanMac``, and ``GatewayLorawanMac``
+``EndDeviceLorawanMac``, ``ClassAEndDeviceLorawanMac``,
+``ClassCEndDeviceLorawanMac``, and ``GatewayLorawanMac``
 are used to represent the MAC layer. A ``NetworkServer`` application can also be
 installed on a node that will then administer the wireless network through the
 GW's forwarding application, ``Forwarder``, which leverages the gateway's LoRa
@@ -356,7 +359,25 @@ experimental feature, prone to yet undiscovered bugs.
 Device Classes
 ==============
 
-Currently, only Class A End Devices are supported.
+Class A and Class C End Devices are supported.
+
+Class A devices (``ClassAEndDeviceLorawanMac``) open two receive windows (RX1
+and RX2) after each uplink transmission, as described above.
+
+Class C devices (``ClassCEndDeviceLorawanMac``, extending
+``ClassAEndDeviceLorawanMac``) additionally keep a continuous receive window
+(RXC) open on the RX2 frequency and data rate whenever they are not
+transmitting and not inside an RX1/RX2 window, following Section 15 of the
+LoRaWAN L2 1.0.4 specification: RXC is opened between the end of an uplink and
+RX1, between RX1 and RX2, and permanently after RX2 until the next uplink.
+Downlinks received in the RXC window that carry MAC commands are silently
+discarded, as required by the 1.0.4 specification. Class C devices are
+instantiated by setting the device type ``LorawanMacHelper::ED_C`` in
+``LorawanMacHelper``. On the server side, ``NetworkServer::EnqueueDownlink``
+allows an application (see ``LoraApplicationServer``) to push an unconfirmed
+downlink to a Class C device at any time, without waiting for an uplink;
+see ``examples/class-c-example.cc`` and
+``examples/app-server-verify-example.cc``.
 
 Regional parameters
 ===================

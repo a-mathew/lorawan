@@ -213,6 +213,10 @@ SimpleEndDeviceLoraPhy::StartReceive(Ptr<Packet> packet,
             // EndReceive will handle the switch back to STANDBY state
             SwitchToRx();
 
+            // Remember which reception we are locked on, so that EndReceive
+            // can detect receptions aborted by the MAC (Class C preemption)
+            m_currentRxEvent = event;
+
             // Schedule the end of the reception of the packet
             NS_LOG_INFO("Scheduling reception of a packet. End in " << duration.As(Time::S));
 
@@ -229,6 +233,32 @@ void
 SimpleEndDeviceLoraPhy::EndReceive(Ptr<Packet> packet, Ptr<LoraInterferenceHelper::Event> event)
 {
     NS_LOG_FUNCTION(this << packet << event);
+
+    // If the MAC forced the PHY out of RX mid-demodulation (LoRaWAN 1.0.4
+    // §15: RX1/RX2 or a TX preempting an in-progress RXC reception), this
+    // reception was aborted and its packet must not be delivered.
+    if (GetState() != EndDeviceLoraPhy::State::RX || event != m_currentRxEvent)
+    {
+        NS_LOG_INFO("Reception was aborted before completion: dropping packet.");
+
+        if (m_device)
+        {
+            m_interferedPacket(packet, m_device->GetNode()->GetId());
+        }
+        else
+        {
+            m_interferedPacket(packet, 0);
+        }
+
+        // Only inform the MAC when the radio is idle: if a newer reception is
+        // already in progress, this stale event must not disturb it.
+        if (GetState() != EndDeviceLoraPhy::State::RX && !m_rxFailedCallback.IsNull())
+        {
+            m_rxFailedCallback(packet);
+        }
+        return;
+    }
+    m_currentRxEvent = nullptr;
 
     // Automatically switch to Standby in either case
     SwitchToStandby();

@@ -19,6 +19,8 @@
 #include "ns3/random-variable-stream.h"
 #include "ns3/traced-value.h"
 
+#include <deque>
+
 namespace ns3
 {
 namespace lorawan
@@ -466,6 +468,19 @@ class EndDeviceLorawanMac : public LorawanMac
      * from the application to be sent.
      */
     EventId m_nextRetx;
+
+    /**
+     * FIFO queue of packets whose transmission was postponed while another
+     * postponed transmission was already pending. Keeps postponed packets in
+     * order instead of overwriting the previously scheduled one.
+     */
+    std::deque<Ptr<Packet>> m_postponedTxQueue;
+
+    /**
+     * The packet currently scheduled for transmission on m_nextRetx, used to
+     * coalesce duplicate postponement requests for the same packet.
+     */
+    Ptr<Packet> m_nextRetxPacket;
 
     /**
      * The last known link margin in dB from the demodulation floor.

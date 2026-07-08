@@ -102,7 +102,6 @@ set(header_files
     helper/network-server-helper.h
     helper/lora-application-server-helper.h
     helper/lora-packet-tracker.h
-    test/utilities.h
 )
 
 build_lib(

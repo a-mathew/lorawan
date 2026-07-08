@@ -13,22 +13,43 @@
 #include "network-server.h"
 
 #include "class-a-end-device-lorawan-mac.h"
+#include "gateway-lorawan-mac.h"
 #include "lora-device-address.h"
 #include "lora-frame-header.h"
+#include "lora-net-device.h"
 #include "lora-tag.h"
 #include "lorawan-mac-header.h"
 #include "mac-command.h"
+#include "network-controller-components.h"
+#include "network-controller.h"
+#include "network-scheduler.h"
 #include "network-status.h"
 
 #include "ns3/net-device.h"
 #include "ns3/node-container.h"
 #include "ns3/packet.h"
 #include "ns3/point-to-point-net-device.h"
+#include "ns3/simulator.h"
 
 namespace ns3
 {
 namespace lorawan
 {
+
+namespace
+{
+/// Retries before a downlink is dropped when no gateway can transmit.
+constexpr uint8_t MAX_DOWNLINK_RETRIES = 10;
+/// Delay between no-gateway retries. Sized so that the total retry budget
+/// covers the off-time of a full-length SF12 downlink on a 10% duty-cycle
+/// sub-band (~16-18 s).
+constexpr uint32_t DOWNLINK_RETRY_DELAY_MS = 2000;
+/// Quiet period after an uplink during which no spontaneous Class C downlink
+/// is started: RECEIVE_DELAY2 (2 s) plus the RX2 window duration and margin.
+/// RX1/RX2 preempt an in-progress RXC demodulation (LoRaWAN 1.0.4 §15), so a
+/// downlink overlapping this region would be aborted by the device.
+constexpr double CLASS_A_QUIET_PERIOD_S = 2.5;
+} // namespace
 
 NS_LOG_COMPONENT_DEFINE("NetworkServer");
 
@@ -45,6 +66,16 @@ NetworkServer::GetTypeId()
                 "ReceivedPacket",
                 "Trace source that is fired when a packet arrives at the network server",
                 MakeTraceSourceAccessor(&NetworkServer::m_receivedPacket),
+                "ns3::Packet::TracedCallback")
+            .AddTraceSource(
+                "ForwardedToAS",
+                "Trace source fired when an uplink payload is forwarded to the Application Server",
+                MakeTraceSourceAccessor(&NetworkServer::m_forwardedToAS),
+                "ns3::Packet::TracedCallback")
+            .AddTraceSource(
+                "SentDownlink",
+                "Trace source fired when a downlink from EnqueueDownlink is sent to a gateway",
+                MakeTraceSourceAccessor(&NetworkServer::m_sentDownlink),
                 "ns3::Packet::TracedCallback")
             .SetGroupName("lorawan");
     return tid;
@@ -180,13 +211,32 @@ NetworkServer::Receive(Ptr<NetDevice> device,
 
         LoraDeviceAddress deviceAddr = frameHdr.GetAddress();
 
+        // Remember when this device last talked to us: spontaneous Class C
+        // downlinks must stay clear of its RX1/RX2 window region.
+        m_lastUplinkTime[deviceAddr] = Simulator::Now();
+
         // Forward only if there is application payload
         if (payloadCopy->GetSize() > 0)
         {
-            NS_LOG_INFO("Forwarding " << payloadCopy->GetSize()
-                                       << " bytes uplink payload from device "
-                                       << deviceAddr << " to Application Server");
-            m_uplinkForwardCb(deviceAddr, payloadCopy);
+            // Deduplicate: with N gateways in range the same uplink arrives N
+            // times (and confirmed-uplink retransmissions repeat the FCnt);
+            // forward each frame counter value only once per device.
+            uint32_t fCnt = frameHdr.GetFCnt();
+            auto lastFwd = m_lastForwardedFCnt.find(deviceAddr);
+            if (lastFwd != m_lastForwardedFCnt.end() && lastFwd->second == fCnt)
+            {
+                NS_LOG_DEBUG("Uplink FCnt " << fCnt << " from " << deviceAddr
+                                            << " already forwarded to AS; dropping duplicate.");
+            }
+            else
+            {
+                m_lastForwardedFCnt[deviceAddr] = fCnt;
+                NS_LOG_INFO("Forwarding " << payloadCopy->GetSize()
+                                          << " bytes uplink payload from device " << deviceAddr
+                                          << " to Application Server");
+                m_forwardedToAS(payloadCopy);
+                m_uplinkForwardCb(deviceAddr, payloadCopy);
+            }
         }
     }
 
@@ -221,6 +271,16 @@ NetworkServer::EnqueueDownlink(LoraDeviceAddress deviceAddress, Ptr<Packet> payl
 {
     NS_LOG_FUNCTION(this << deviceAddress << payload->GetSize());
 
+    DoEnqueueDownlink(deviceAddress, payload, MAX_DOWNLINK_RETRIES);
+}
+
+void
+NetworkServer::DoEnqueueDownlink(LoraDeviceAddress deviceAddress,
+                                 Ptr<Packet> payload,
+                                 uint8_t retriesLeft)
+{
+    NS_LOG_FUNCTION(this << deviceAddress << payload->GetSize() << unsigned(retriesLeft));
+
     // Look up the end device
     Ptr<EndDeviceStatus> edStatus = m_status->GetEndDeviceStatus(deviceAddress);
     if (!edStatus)
@@ -229,11 +289,50 @@ NetworkServer::EnqueueDownlink(LoraDeviceAddress deviceAddress, Ptr<Packet> payl
         return;
     }
 
+    // Keep clear of the device's Class A receive-window region: RX1/RX2
+    // preempt an in-progress RXC demodulation, so a downlink started here
+    // would be aborted by the device.
+    auto lastUplink = m_lastUplinkTime.find(deviceAddress);
+    if (lastUplink != m_lastUplinkTime.end())
+    {
+        Time safeAt = lastUplink->second + Seconds(CLASS_A_QUIET_PERIOD_S);
+        if (Simulator::Now() < safeAt)
+        {
+            NS_LOG_INFO("EnqueueDownlink: device " << deviceAddress
+                                                   << " is inside its Class A window region; "
+                                                      "deferring downlink to "
+                                                   << safeAt.As(Time::S));
+            Simulator::Schedule(safeAt - Simulator::Now(),
+                                &NetworkServer::DoEnqueueDownlink,
+                                this,
+                                deviceAddress,
+                                payload,
+                                retriesLeft);
+            return;
+        }
+    }
+
     // Find the best gateway for this device (use window 2 = RX2 for Class C)
     Address gwAddress = m_status->GetBestGatewayForDevice(deviceAddress, 2);
     if (gwAddress == Address())
     {
-        NS_LOG_WARN("EnqueueDownlink: no gateway available for device " << deviceAddress);
+        if (retriesLeft > 0)
+        {
+            NS_LOG_WARN("EnqueueDownlink: no gateway available for device "
+                        << deviceAddress << "; retrying in " << DOWNLINK_RETRY_DELAY_MS
+                        << " ms (" << unsigned(retriesLeft) << " retries left)");
+            Simulator::Schedule(MilliSeconds(DOWNLINK_RETRY_DELAY_MS),
+                                &NetworkServer::DoEnqueueDownlink,
+                                this,
+                                deviceAddress,
+                                payload,
+                                static_cast<uint8_t>(retriesLeft - 1));
+        }
+        else
+        {
+            NS_LOG_ERROR("EnqueueDownlink: no gateway available for device "
+                         << deviceAddress << " after all retries; dropping downlink.");
+        }
         return;
     }
 
@@ -244,13 +343,21 @@ NetworkServer::EnqueueDownlink(LoraDeviceAddress deviceAddress, Ptr<Packet> payl
     frameHdr.SetAsDownlink();
     frameHdr.SetAddress(deviceAddress);
     frameHdr.SetAck(false);
+    frameHdr.SetFCnt(m_downlinkFCnt[deviceAddress]++);
+    // FPort > 0 marks an application-data downlink; a Class C device SHALL
+    // silently discard RXC downlinks carrying MAC commands (FPort 0).
+    frameHdr.SetFPort(1);
     pkt->AddHeader(frameHdr);
 
     LorawanMacHeader macHdr;
     macHdr.SetMType(LorawanMacHeader::UNCONFIRMED_DATA_DOWN);
     pkt->AddHeader(macHdr);
 
-    // Tag with RX2 parameters (same pattern as NetworkStatus::GetReplyForDevice)
+    // Tag with RX2 parameters (same pattern as NetworkStatus::GetReplyForDevice).
+    // The payload may still carry the LoraTag of the uplink it was copied from
+    // (e.g. an AS echo handler); remove it first, a packet can only hold one.
+    LoraTag staleTag;
+    pkt->RemovePacketTag(staleTag);
     LoraTag tag;
     tag.SetDataRate(edStatus->GetMac()->GetSecondReceiveWindowDataRate());
     tag.SetFrequency(edStatus->GetSecondReceiveWindowFrequency());
@@ -261,6 +368,7 @@ NetworkServer::EnqueueDownlink(LoraDeviceAddress deviceAddress, Ptr<Packet> payl
                 << " via gateway " << gwAddress);
 
     // Send through the selected gateway
+    m_sentDownlink(pkt);
     m_status->SendThroughGateway(pkt, gwAddress);
 }
 

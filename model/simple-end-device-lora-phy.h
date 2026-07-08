@@ -51,6 +51,13 @@ class SimpleEndDeviceLoraPhy : public EndDeviceLoraPhy
               double txPowerDbm) override;
 
   private:
+    /**
+     * The interference event of the reception this PHY is currently locked
+     * on, if any. Used to detect receptions that were aborted by the MAC
+     * (e.g. a Class C RXC demodulation preempted by RX1/RX2 or a TX) so that
+     * their EndReceive event does not deliver the packet anyway.
+     */
+    Ptr<LoraInterferenceHelper::Event> m_currentRxEvent;
 };
 
 } // namespace lorawan

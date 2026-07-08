@@ -155,13 +155,46 @@ class NetworkServer : public Application
     void EnqueueDownlink(LoraDeviceAddress deviceAddress, Ptr<Packet> payload);
 
   protected:
+    /**
+     * Internal worker for EnqueueDownlink.
+     *
+     * Defers transmission while the device is inside its Class A
+     * receive-window region (RX1/RX2 preempt an RXC demodulation,
+     * LoRaWAN 1.0.4 Section 15) and retries when no gateway is currently
+     * able to transmit (busy or duty-cycle limited).
+     *
+     * @param deviceAddress The target end device address.
+     * @param payload       The raw application payload to deliver.
+     * @param retriesLeft   Remaining no-gateway retries before dropping.
+     */
+    void DoEnqueueDownlink(LoraDeviceAddress deviceAddress,
+                           Ptr<Packet> payload,
+                           uint8_t retriesLeft);
+
     Ptr<NetworkStatus> m_status;         //!< Ptr to the NetworkStatus object.
     Ptr<NetworkController> m_controller; //!< Ptr to the NetworkController object.
     Ptr<NetworkScheduler> m_scheduler;   //!< Ptr to the NetworkScheduler object.
 
     TracedCallback<Ptr<const Packet>> m_receivedPacket; //!< The `ReceivedPacket` trace source.
 
+    /// Trace source fired when an uplink payload is forwarded to the Application Server.
+    TracedCallback<Ptr<const Packet>> m_forwardedToAS;
+
+    /// Trace source fired when a downlink built by EnqueueDownlink is sent to a gateway.
+    TracedCallback<Ptr<const Packet>> m_sentDownlink;
+
     UplinkForwardCallback m_uplinkForwardCb; //!< Callback to Application Server.
+
+    /// Last uplink frame counter forwarded to the AS, per device (deduplicates
+    /// multi-gateway copies and confirmed-uplink retransmissions).
+    std::map<LoraDeviceAddress, uint32_t> m_lastForwardedFCnt;
+
+    /// Downlink frame counter per device for server-initiated (Class C) downlinks.
+    std::map<LoraDeviceAddress, uint16_t> m_downlinkFCnt;
+
+    /// Time of the last uplink received from each device, used to keep
+    /// spontaneous Class C downlinks clear of the RX1/RX2 window region.
+    std::map<LoraDeviceAddress, Time> m_lastUplinkTime;
 };
 
 } // namespace lorawan

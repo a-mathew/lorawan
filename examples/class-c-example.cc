@@ -9,9 +9,6 @@
  * downlink communication with multiple round-trip exchanges.
  */
 
-#include "ns3/building-penetration-loss.h"
-#include "ns3/building-allocator.h"
-#include "ns3/buildings-helper.h"
 #include "ns3/class-c-end-device-lorawan-mac.h"
 #include "ns3/command-line.h"
 #include "ns3/constant-position-mobility-model.h"
@@ -22,11 +19,11 @@
 #include "ns3/gateway-lorawan-mac.h"
 #include "ns3/log.h"
 #include "ns3/lora-helper.h"
+#include "ns3/lora-net-device.h"
 #include "ns3/lorawan-mac-helper.h"
 #include "ns3/mobility-helper.h"
 #include "ns3/network-server-helper.h"
 #include "ns3/node-container.h"
-#include "ns3/one-shot-sender-helper.h"
 #include "ns3/periodic-sender-helper.h"
 #include "ns3/point-to-point-helper.h"
 #include "ns3/point-to-point-net-device.h"

@@ -24,6 +24,7 @@
 #include "lora-tag.h"
 
 #include "ns3/log.h"
+#include "ns3/simulator.h"
 
 namespace ns3
 {
@@ -118,6 +119,12 @@ ClassCEndDeviceLorawanMac::Receive(Ptr<const Packet> packet)
     if (!packet || packet->GetSize() < 1)
     {
         NS_LOG_WARN("Dropping malformed downlink: empty/undersized packet");
+        if (!m_continuousRxOpen)
+        {
+            Simulator::Schedule(MilliSeconds(1),
+                                &ClassCEndDeviceLorawanMac::OpenContinuousReceiveWindow,
+                                this);
+        }
         return;
     }
 
@@ -130,6 +137,12 @@ ClassCEndDeviceLorawanMac::Receive(Ptr<const Packet> packet)
     {
         NS_LOG_WARN("Dropping malformed downlink: insufficient bytes for frame header ("
                     << packetCopy->GetSize() << "B)");
+        if (!m_continuousRxOpen)
+        {
+            Simulator::Schedule(MilliSeconds(1),
+                                &ClassCEndDeviceLorawanMac::OpenContinuousReceiveWindow,
+                                this);
+        }
         return;
     }
 
@@ -150,6 +163,19 @@ ClassCEndDeviceLorawanMac::Receive(Ptr<const Packet> packet)
         if (messageForUs)
         {
             NS_LOG_INFO("The message is for us!");
+
+            // LoRaWAN 1.0.4 §15: a Class C (RXC) downlink SHALL NOT transport
+            // MAC commands; if it does, the entire frame is silently
+            // discarded. MAC commands only arrive on RX1/RX2 downlinks.
+            if (m_continuousRxOpen && (!fHdr.GetCommands().empty() || fHdr.GetFPort() == 0))
+            {
+                NS_LOG_WARN("Discarding Class C (RXC) downlink carrying MAC commands "
+                            "(LoRaWAN 1.0.4 Section 15).");
+                Simulator::Schedule(MilliSeconds(1),
+                                    &ClassCEndDeviceLorawanMac::OpenContinuousReceiveWindow,
+                                    this);
+                return;
+            }
 
             // Mark that we received a downlink in this RX cycle
             m_downlinkReceivedInRx = true;
@@ -229,12 +255,43 @@ ClassCEndDeviceLorawanMac::Receive(Ptr<const Packet> packet)
             ResetRetransmissionParameters();
         }
     }
+
+    // A Class C device must always return to RXC when idle
+    if (!m_continuousRxOpen)
+    {
+        Simulator::Schedule(MilliSeconds(1),
+                            &ClassCEndDeviceLorawanMac::OpenContinuousReceiveWindow,
+                            this);
+    }
 }
 
 void
 ClassCEndDeviceLorawanMac::FailedReception(Ptr<const Packet> packet)
 {
     NS_LOG_FUNCTION(this << packet);
+
+    // Same retransmission recovery as Class A: a corrupted reception around
+    // RX2 must not stall a pending confirmed-uplink retransmission. Skipped
+    // while transmitting (a preempted RXC reception can be reported mid-TX;
+    // TxFinished will schedule the receive windows for the ongoing uplink).
+    if (DynamicCast<EndDeviceLoraPhy>(m_phy)->GetState() != EndDeviceLoraPhy::State::TX &&
+        m_secondReceiveWindow.IsExpired() && m_retxParams.waitingAck)
+    {
+        if (m_retxParams.retxLeft > 0)
+        {
+            this->Send(m_retxParams.packet);
+            NS_LOG_INFO("We have " << unsigned(m_retxParams.retxLeft)
+                                   << " retransmissions left: rescheduling transmission.");
+        }
+        else
+        {
+            uint8_t txs = m_nbTrans - (m_retxParams.retxLeft);
+            m_requiredTxCallback(txs, false, m_retxParams.firstAttempt, m_retxParams.packet);
+            NS_LOG_DEBUG("Failure: no more retransmissions left. Used " << unsigned(txs)
+                                                                        << " transmissions.");
+            ResetRetransmissionParameters();
+        }
+    }
 
     // After failed reception, ensure RXC gets reopened
     if (!m_continuousRxOpen)

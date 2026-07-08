@@ -40,6 +40,7 @@
 #include "ns3/gateway-lorawan-mac.h"
 #include "ns3/log.h"
 #include "ns3/lora-helper.h"
+#include "ns3/lora-net-device.h"
 #include "ns3/lorawan-mac-helper.h"
 #include "ns3/mobility-helper.h"
 #include "ns3/network-server-helper.h"
@@ -51,6 +52,7 @@
 #include "ns3/position-allocator.h"
 #include "ns3/random-variable-stream.h"
 #include "ns3/simulator.h"
+#include "ns3/string.h"
 
 #include <algorithm>
 #include <ctime>
@@ -366,7 +368,7 @@ main(int argc, char* argv[])
     std::cout << std::endl;
     std::cout << "--- PHY-level (per gateway) ---" << std::endl;
     std::cout << "TotPktOnGW RecByGW IntfOnGW NoMoreDem UnderSens LostBcTx: "
-              << tracker.PrintPhyPacketsPerGw(Seconds(0), stopTime, nGateways) << std::endl;
+              << tracker.PrintPhyPacketsPerGw(Seconds(0), stopTime, gateways.Get(0)->GetId()) << std::endl;
 
     Simulator::Destroy();
 

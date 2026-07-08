@@ -18,6 +18,7 @@
 #include "ns3/log.h"
 #include "ns3/simulator.h"
 
+#include <algorithm>
 #include <bitset>
 
 namespace ns3
@@ -98,7 +99,7 @@ EndDeviceLorawanMac::EndDeviceLorawanMac()
     : m_nbTrans(1),
       m_dataRate(0),
       m_txPowerDbm(14),
-      m_codingRate(1),
+      m_codingRate(CodingRate::CR_4_5),
       // LoraWAN default
       m_headerDisabled(false),
       // LoraWAN default
@@ -232,12 +233,23 @@ EndDeviceLorawanMac::PostponeTransmission(Time netxTxDelay, Ptr<Packet> packet)
      */
     if (m_nextRetx.IsPending())
     {
+        // Coalesce duplicates: the same packet (typically a confirmed-uplink
+        // retransmission triggered from several code paths) must only be
+        // scheduled once, or it gets headers added twice and is corrupted.
+        if (packet == m_nextRetxPacket ||
+            std::find(m_postponedTxQueue.begin(), m_postponedTxQueue.end(), packet) !=
+                m_postponedTxQueue.end())
+        {
+            NS_LOG_DEBUG("Packet already awaiting a postponed transmission; coalescing.");
+            return;
+        }
         m_postponedTxQueue.push_back(packet);
         NS_LOG_WARN("Postponed TX already pending; queueing packet (queue="
                     << m_postponedTxQueue.size() << ")");
         return;
     }
 
+    m_nextRetxPacket = packet;
     m_nextRetx = Simulator::Schedule(netxTxDelay, &EndDeviceLorawanMac::DoSend, this, packet);
     NS_LOG_WARN("Attempting to send, but the aggregate duty cycle won't allow it. Scheduling a tx "
                 "at a delay "
@@ -248,6 +260,12 @@ void
 EndDeviceLorawanMac::DoSend(Ptr<Packet> packet)
 {
     NS_LOG_FUNCTION(this);
+
+    if (packet == m_nextRetxPacket)
+    {
+        // The postponed transmission for this packet is now executing
+        m_nextRetxPacket = nullptr;
+    }
 
     // Add the Lora Frame Header to the packet
     LoraFrameHeader frameHdr;
@@ -291,7 +309,7 @@ EndDeviceLorawanMac::DoSend(Ptr<Packet> packet)
      * Drain postponed packet queue one-by-one.
      * We re-enter Send() so normal duty-cycle/window checks still apply.
      */
-    if (!m_postponedTxQueue.empty())
+    if (!m_nextRetx.IsPending() && !m_postponedTxQueue.empty())
     {
         Ptr<Packet> nextPacket = m_postponedTxQueue.front();
         m_postponedTxQueue.pop_front();
@@ -594,6 +612,30 @@ EndDeviceLorawanMac::ResetRetransmissionParameters()
 {
     m_retxParams.waitingAck = false;
     m_retxParams.retxLeft = m_nbTrans;
+
+    if (m_retxParams.packet)
+    {
+        // Drop queued duplicates of the packet whose lifecycle just ended
+        m_postponedTxQueue.erase(std::remove(m_postponedTxQueue.begin(),
+                                             m_postponedTxQueue.end(),
+                                             m_retxParams.packet),
+                                 m_postponedTxQueue.end());
+
+        // Cancel a pending retransmission of that packet (e.g. after its ACK
+        // arrived) and promote the next queued packet, if any
+        if (m_nextRetx.IsPending() && m_nextRetxPacket == m_retxParams.packet)
+        {
+            Simulator::Cancel(m_nextRetx);
+            m_nextRetxPacket = nullptr;
+            if (!m_postponedTxQueue.empty())
+            {
+                Ptr<Packet> nextPacket = m_postponedTxQueue.front();
+                m_postponedTxQueue.pop_front();
+                Simulator::ScheduleNow(&EndDeviceLorawanMac::Send, this, nextPacket);
+            }
+        }
+    }
+
     m_retxParams.packet = nullptr;
     m_retxParams.firstAttempt = Time(0);
 

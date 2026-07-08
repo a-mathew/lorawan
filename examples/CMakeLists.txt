@@ -9,6 +9,7 @@ set(base_examples
     frame-counter-update
     class-c-example
     class-c-realistic-channel-example
+    app-server-verify-example
 )
 foreach(
   example

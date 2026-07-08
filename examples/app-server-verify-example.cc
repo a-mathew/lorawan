@@ -34,6 +34,7 @@
 #include "ns3/lora-application-server-helper.h"
 #include "ns3/lora-application-server.h"
 #include "ns3/lora-helper.h"
+#include "ns3/lora-net-device.h"
 #include "ns3/lorawan-mac-helper.h"
 #include "ns3/mobility-helper.h"
 #include "ns3/network-server-helper.h"
@@ -155,7 +156,7 @@ AsSentDownlinkCb(Ptr<const Packet> pkt)
 // ============================================================
 
 void
-EdTxCallback(uint32_t nodeId, Ptr<const Packet> pkt, uint32_t /* sfNum */)
+EdTxCallback(uint32_t nodeId, Ptr<const Packet> pkt, uint32_t /* senderNodeId */)
 {
     g_edTxCount[nodeId]++;
     NS_LOG_DEBUG("[ED:" << nodeId << ":TX] uplink #" << g_edTxCount[nodeId]
